@@ -60,10 +60,17 @@ class scmWorker(object):
         else:
             self.log.error("Trying to use SCM, package not defined")
             sys.exit(5)
+
+        # normalize any path in SCM_PKG to drop any trailing "/"
+        if self.pkg.endswith(os.path.sep):
+            self.pkg = self.pkg.rtrim(os.path.sep)
+
         self.get = self.get.replace("SCM_PKG", self.pkg)
 
         self.spec = opts['spec']
-        self.spec = self.spec.replace("SCM_PKG", self.pkg)
+	# trim SCM_PKG down to a single path element,
+	# the basename, for use as the specification file
+        self.spec = self.spec.replace("SCM_PKG", self.pkg.split(os.path.sep)[-1])
 
         self.ext_src_dir = opts['ext_src_dir']
         self.write_tar = opts['write_tar']
@@ -84,7 +91,7 @@ class scmWorker(object):
 
     decorate(traceLog())
     def get_sources(self):
-        self.wrk_dir = tempfile.mkdtemp(".mock-scm." + self.pkg)
+        self.wrk_dir = tempfile.mkdtemp(".mock-scm." + self.pkg.replace("/", "-"))
         self.src_dir = self.wrk_dir + "/" + self.pkg
         self.log.debug("SCM checkout directory: " + self.wrk_dir)
         mockbuild.util.do(shlex.split(self.get), shell=False, cwd=self.wrk_dir, env=self.environ)
@@ -163,11 +170,11 @@ class scmWorker(object):
             self.log.debug("Writing " + self.src_dir + "/" + tarball + "...")
             dir = os.getcwd()
             os.chdir(self.wrk_dir)
-            os.rename(self.name, tardir)
+            os.rename(self.src_dir, tardir)
             cmd = "tar czf " + tarball + " " + taropts + " " + tardir
             mockbuild.util.do(shlex.split(cmd), shell=False, cwd=self.wrk_dir, env=self.environ)
             os.rename(tarball, tardir + "/" + tarball)
-            os.rename(tardir, self.name)
+            os.rename(tardir, self.src_dir)
             os.chdir(dir)
 
         # Get possible external sources from an external sources directory
