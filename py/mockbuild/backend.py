@@ -80,7 +80,7 @@ class Root(object):
         self.chrootuser = 'mockbuild'
         self.chrootgid = config['chrootgid']
         self.chrootgroup = 'mockbuild'
-        self.yum_conf_content = config['yum.conf']
+        self.yum_conf_content = config['yum.conf'] % config
         self.yum_priorities_conf_content = config['priorities.conf']
         self.yum_rhnplugin_conf_content = config['rhnplugin.conf']
         self.yum_subscription_manager_conf_content = config['subscription-manager.conf']
