@@ -8,29 +8,31 @@ import os
 import ctypes
 
 # our imports
-from mockbuild.trace_decorator import traceLog, decorate
+from mockbuild.trace_decorator import traceLog
+
+_libc = ctypes.CDLL(None, use_errno=True)
 
 # class
-class uidManager(object):
-    decorate(traceLog())
+class UidManager(object):
+    @traceLog()
     def __init__(self, unprivUid=-1, unprivGid=-1):
         self.privStack = []
         self.unprivUid = unprivUid
         self.unprivGid = unprivGid
 
-    decorate(traceLog())
+    @traceLog()
     def becomeUser(self, uid, gid=-1):
         # save current ruid, euid, rgid, egid
         self._push()
         self._becomeUser(uid, gid)
 
-    decorate(traceLog())
+    @traceLog()
     def dropPrivsTemp(self):
         # save current ruid, euid, rgid, egid
         self._push()
         self._becomeUser(self.unprivUid, self.unprivGid)
 
-    decorate(traceLog())
+    @traceLog()
     def restorePrivs(self):
         # back to root first
         self._elevatePrivs()
@@ -40,13 +42,13 @@ class uidManager(object):
         os.setregid(privs['rgid'], privs['egid'])
         setresuid(privs['ruid'], privs['euid'])
 
-    decorate(traceLog())
+    @traceLog()
     def dropPrivsForever(self):
         self._elevatePrivs()
         os.setregid(self.unprivGid, self.unprivGid)
         os.setreuid(self.unprivUid, self.unprivUid)
 
-    decorate(traceLog())
+    @traceLog()
     def _push(self):
          # save current ruid, euid, rgid, egid
         self.privStack.append({
@@ -56,19 +58,19 @@ class uidManager(object):
             "egid": os.getegid(),
             })
 
-    decorate(traceLog())
+    @traceLog()
     def _elevatePrivs(self):
         setresuid(0, 0, 0)
         os.setregid(0, 0)
 
-    decorate(traceLog())
+    @traceLog()
     def _becomeUser(self, uid, gid=None):
         self._elevatePrivs()
         if gid is not None:
             os.setregid(gid, gid)
         setresuid(uid, uid, 0)
 
-    decorate(traceLog())
+    @traceLog()
     def changeOwner(self, path, uid=None, gid=None):
         self._elevatePrivs()
         if uid is None:
@@ -76,11 +78,6 @@ class uidManager(object):
         if gid is None:
             gid = self.unprivGid
         os.chown(path, uid, gid)
-
-# python doesn't have native versions of these. :(
-
-import ctypes
-_libc = ctypes.cdll.LoadLibrary(None)
 
 def getresuid():
     ruid = ctypes.c_long()

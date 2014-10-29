@@ -32,12 +32,15 @@ class Error(Exception):
 # 6 = invalid architecture
 # 10 = problem building the package
 # 20 = error in the chroot of some kind
+# 25 = LVM manipulation error
 # 30 = Yum emitted an error of some sort
 # 40 = some error in the pkg we're building
 # 50 = tried to fork a subcommand and it errored out
 # 60 = buildroot locked
+# 65 = LVM thinpool locked
 # 70 = result dir could not be created
 # 80 = unshare of namespace failed
+# 85 = setting namespace failed
 # 90 = attempted to use an uninitialized chroot
 # 100 = attempt to run a root shell and root shells disallowed
 
@@ -54,6 +57,13 @@ class RootError(Error):
         Error.__init__(self, msg)
         self.msg = msg
         self.resultcode = 20
+
+class LvmError(Error):
+    "LVM manipulation failed."
+    def __init__(self, msg):
+        Error.__init__(self, msg)
+        self.msg = msg
+        self.resultcode = 25
 
 class YumError(RootError):
     "yum failed."
@@ -76,19 +86,26 @@ class BuildRootLocked(Error):
         self.msg = msg
         self.resultcode = 60
 
+class LvmLocked(Error):
+    "LVM thinpool is locked."
+    def __init__(self, msg):
+        Error.__init__(self, msg)
+        self.msg = msg
+        self.resultcode = 65
+
 class BadCmdline(Error):
     "user gave bad/inconsistent command line."
     def __init__(self, msg):
         Error.__init__(self, msg)
         self.msg = msg
-        self.resultcode = 05
+        self.resultcode = 5
 
 class InvalidArchitecture(Error):
     "invalid host/target architecture specified."
     def __init__(self, msg):
         Error.__init__(self, msg)
         self.msg = msg
-        self.resultcode = 06
+        self.resultcode = 6
 
 class ResultDirNotAccessible(Error):
     """
@@ -109,6 +126,14 @@ class UnshareFailed(Error):
         Error.__init__(self, msg)
         self.msg = msg
         self.resultcode = 80
+
+class SetnsFailed(Error):
+    "call to C library setns(2) syscall failed"
+
+    def __init__(self, msg):
+        Error.__init__(self, msg)
+        self.msg = msg
+        self.resultcode = 85
 
 class ChrootNotInitialized(Error):
     "attempt to use uninitialized chroot"

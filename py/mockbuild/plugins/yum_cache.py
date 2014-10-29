@@ -10,32 +10,33 @@ import os
 import glob
 
 # our imports
-from mockbuild.trace_decorator import decorate, traceLog, getLog
+from mockbuild.trace_decorator import traceLog, getLog
 import mockbuild.util
 from mockbuild.mounts import BindMountPoint
 
 # set up logging, module options
-requires_api_version = "1.0"
+requires_api_version = "1.1"
 
 # plugin entry point
-decorate(traceLog())
-def init(rootObj, conf):
-    YumCache(rootObj, conf)
+@traceLog()
+def init(plugins, conf, buildroot):
+    YumCache(plugins, conf, buildroot)
 
 # classes
 class YumCache(object):
     """caches root environment in a tarball"""
-    decorate(traceLog())
-    def __init__(self, rootObj, conf):
-        self.rootObj = rootObj
+    @traceLog()
+    def __init__(self, plugins, conf, buildroot):
+        self.buildroot = buildroot
+        self.config = buildroot.config
+        self.state = buildroot.state
         self.yum_cache_opts = conf
         self.yumSharedCachePath = self.yum_cache_opts['dir'] % self.yum_cache_opts
-        self.online = rootObj.online
-        rootObj.yum_cacheObj = self
-        rootObj.addHook("preyum", self._yumCachePreYumHook)
-        rootObj.addHook("postyum", self._yumCachePostYumHook)
-        rootObj.addHook("preinit", self._yumCachePreInitHook)
-        rootObj.mounts.add(BindMountPoint(srcpath=self.yumSharedCachePath, bindpath=rootObj.makeChrootPath('/var/cache/yum')))
+        self.online = self.config['online']
+        plugins.add_hook("preyum", self._yumCachePreYumHook)
+        plugins.add_hook("postyum", self._yumCachePostYumHook)
+        plugins.add_hook("preinit", self._yumCachePreInitHook)
+        buildroot.mounts.add(BindMountPoint(srcpath=self.yumSharedCachePath, bindpath=buildroot.make_chroot_path('/var/cache/yum')))
         mockbuild.util.mkdirIfAbsent(self.yumSharedCachePath)
         self.yumCacheLock = open(os.path.join(self.yumSharedCachePath, "yumcache.lock"), "a+")
 
@@ -46,29 +47,29 @@ class YumCache(object):
     # by yum, and prior to cleaning it. This prevents simultaneous access from
     # screwing things up. This can possibly happen, eg. when running multiple
     # mock instances with --uniqueext=
-    decorate(traceLog())
+    @traceLog()
     def _yumCachePreYumHook(self):
         try:
             fcntl.lockf(self.yumCacheLock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except IOError, e:
-            self.rootObj.start("Waiting for yumcache lock")
+        except IOError:
+            self.state.start("Waiting for yumcache lock")
             fcntl.lockf(self.yumCacheLock.fileno(), fcntl.LOCK_EX)
-            self.rootObj.finish("Waiting for yumcache lock")
+            self.state.finish("Waiting for yumcache lock")
 
-    decorate(traceLog())
+    @traceLog()
     def _yumCachePostYumHook(self):
         fcntl.lockf(self.yumCacheLock.fileno(), fcntl.LOCK_UN)
 
-    decorate(traceLog())
+    @traceLog()
     def _yumCachePreInitHook(self):
         getLog().info("enabled yum cache")
-        mockbuild.util.mkdirIfAbsent(self.rootObj.makeChrootPath('/var/cache/yum'))
+        mockbuild.util.mkdirIfAbsent(self.buildroot.make_chroot_path('/var/cache/yum'))
 
         # lock so others dont accidentally use yum cache while we operate on it.
         self._yumCachePreYumHook()
 
         if self.online:
-            self.rootObj.start("cleaning yum metadata")
+            self.state.start("cleaning yum metadata")
             for (dirpath, dirnames, filenames) in os.walk(self.yumSharedCachePath):
                 for filename in filenames:
                     fullPath = os.path.join(dirpath, filename)
@@ -82,11 +83,12 @@ class YumCache(object):
                             fullPath = None
                             break
 
-                    if fullPath is None: continue
+                    if fullPath is None:
+                        continue
                     if file_age_days > self.yum_cache_opts['max_age_days']:
                         os.unlink(fullPath)
                         continue
-            self.rootObj.finish("cleaning yum metadata")
+            self.state.finish("cleaning yum metadata")
 
         # yum made an rpmdb cache dir in $cachedir/installed for a while;
         # things can go wrong in a specific mock case if this happened.

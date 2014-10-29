@@ -4,19 +4,18 @@
 
 ####################################
 # change version here. --> BOTH PLACES PLEASE!
-AC_INIT([mock],[1.1.41.mc2])
+AC_INIT([mock],[1.2.0.mc1])
 
 temp_RELEASE_NAME=mock
 temp_RELEASE_MAJOR=1
-temp_RELEASE_MINOR=1
-temp_RELEASE_SUBLEVEL=41
-temp_RELEASE_EXTRALEVEL=.mc3
+temp_RELEASE_MINOR=2
+temp_RELEASE_SUBLEVEL=0
+temp_RELEASE_EXTRALEVEL=.mc1
 ####################################
 
 #AC_PREREQ(2.61)
 AC_CONFIG_AUX_DIR([build])
 AM_INIT_AUTOMAKE([foreign 1.11 dist-xz no-dist-gzip])
-AM_MAINTAINER_MODE
 
 # Checks for programs.
 AC_PROG_INSTALL
@@ -56,7 +55,7 @@ VERSION=$PACKAGE_VERSION
 AM_CONDITIONAL(USE_MD5, test -e /usr/bin/rpmbuild-md5)
 
 PKG_CHECK_EXISTS([bash-completion >= 1.99],
-    [BASHCOMPDIR=`$PKG_CONFIG bash-completion --variable=completionsdir`;HAVE_BASHCOMP2=true],
+    [BASHCOMPDIR="$($PKG_CONFIG bash-completion --variable=completionsdir|sed 's|^/usr|${prefix}|;s|^/etc|${sysconfdir}|')";HAVE_BASHCOMP2=true],
     [BASHCOMPDIR="\$(sysconfdir)/bash_completion.d"])
 
 AC_SUBST([RELEASE_NAME])

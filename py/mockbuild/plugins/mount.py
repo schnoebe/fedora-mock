@@ -19,35 +19,33 @@ config_opts['plugin_conf']['mount_opts']['dirs'].append(("server.example.com:/ex
 
 
 import mockbuild.util
-from mockbuild.trace_decorator import decorate, traceLog
+from mockbuild.trace_decorator import traceLog
 from mockbuild.mounts import FileSystemMountPoint
 
-requires_api_version = "1.0"
+requires_api_version = "1.1"
 
 
 # plugin entry point
-decorate(traceLog())
-def init(rootObj, conf):
-    Mount(rootObj, conf)
-
+@traceLog()
+def init(plugins, conf, buildroot):
+    Mount(plugins, conf, buildroot)
 
 # classes
 class Mount(object):
     """mount dirs into chroot"""
-    decorate(traceLog())
-    def __init__(self, rootObj, conf):
-        self.rootObj = rootObj
+    @traceLog()
+    def __init__(self, plugins, conf, buildroot):
+        self.buildroot = buildroot
+        self.config = buildroot.config
+        self.state = buildroot.state
         self.opts = conf
-        rootObj.mountObj = self
-        rootObj.addHook("preinit", self._mountPreInitHook)
-        rootObj.addHook("preshell", self._mountPreInitHook)
-        rootObj.addHook("prechroot", self._mountPreInitHook)
+        plugins.add_hook("preinit", self._mountPreInitHook)
         for device, dest_dir, vfstype, mount_opts in self.opts['dirs']:
-            rootObj.mounts.add(FileSystemMountPoint(rootObj.makeChrootPath(dest_dir),
+            builroot.mounts.add(FileSystemMountPoint(buildroot.make_chroot_path(dest_dir),
                                                     filetype=vfstype,
                                                     device=device,
                                                     options=mount_opts))
-    decorate(traceLog())
+    @traceLog()
     def _mountPreInitHook(self):
         for device, dest_dir, vfstype, mount_opts in self.opts['dirs']:
-            mockbuild.util.mkdirIfAbsent(self.rootObj.makeChrootPath(dest_dir))
+            mockbuild.util.mkdirIfAbsent(self.builroot.make_chroot_path(dest_dir))

@@ -14,7 +14,7 @@ mock  [options] {\fB\-\-init\fR|\fBclean\fR|\fBshell\fR}
 .LP
 mock  [options] \fB\-\-installdeps\fR {SRPM|RPM}
 .LP
-mock  [options] \fB\-\-install\fR PACKAGE
+mock  [options] \fB\-i\fR, \fB\-\-install\fR PACKAGE
 .LP
 mock  [options] \fB\-\-update\fR
 .LP
@@ -27,6 +27,23 @@ mock  [options] \fB\-\-copyin\fR \fIpath [\fIpath...\fR] \fIdestination\fR
 mock  [options] \fB\-\-copyout\fR \fIpath [\fIpath...\fR] \fIdestination\fR
 .LP
 mock  [options] \fB\-\-scm-enable\fR [\fI--scm-option key=value ...\fR]
+.LP
+mock  [options] \fB-l\fR, \fB\-\-list-snapshots\fR
+.LP
+mock  [options] \fB\-\-snapshot\fR [\fIsnapshot-name\fR]
+.LP
+mock  [options] \fB\-\-rollback-to\fR [\fIsnapshot-name\fR]
+.LP
+mock  [options] \fB\-\-remove-snapshot\fR [\fIsnapshot-name\fR]
+.LP
+mock  [options] \fB\-\-umount\fR
+.LP
+mock  [options] \fB\-\-pm-cmd\fR [\fIarguments ...\fR]
+.LP
+mock  [options] \fB\-\-yum-cmd\fR [\fIarguments ...\fR]
+.LP
+mock  [options] \fB\-\-dnf-cmd\fR [\fIarguments ...\fR]
+
 
 .SH "DESCRIPTION"
 .LP
@@ -83,7 +100,7 @@ Run the specified command non-interactively within the chroot (which must alread
 \fB\-\-installdeps\fP 
 Find out deps for SRPM or RPM, and do a yum install to put them in the buildroot. Buildroot must already be initialized -- no 'clean' is performed
 .TP
-\fB\-\-install\fP
+\fB-i\fR, \fB\-\-install\fP
 Do a yum install PACKAGE inside the buildroot. Buildroot must already be initialized -- no 'clean' is performed
 .TP
 \fB\-\-update\fP 
@@ -108,6 +125,43 @@ Enable building from an SCM (CVS/Git/SVN). The SCM repository must be
 configured in site-defaults.cfg before SCM checkouts are possible. SCM
 package and branch can be defined with \fB\-\-scm-option\fP arguments,
 see site-defaults.cfg for more information.
+.TP
+\fB\-\-snapshot\fP
+Make a snapshot of the current state of the buildroot. That snapshot will be set
+as the current base to which \fV\-\-clean\fP and implicit clean happening during
+rebuild command will return.
+This feature is available only when lvm_root plugin is installed and enabled.
+.TP
+\fB-l\fR, \fB\-\-list-snapshots\fP
+List all existing snapshots of the buildroot belonging to current configuration.
+Current base snapshot is marked with an asterisk (\fB*\fR)
+.TP
+\fB\-\-rollback-to\fP
+Return buildroot to the state in specified snapshot and set it as the current
+base to which clean actions will return. It won't delete nor modify the snapshot
+that was set as base previously.
+This feature is available only when lvm_root plugin is installed and enabled.
+.TP
+\fB\-\-remove-snapshot\fP
+Remove given snapshot freeing the space it occupied. This action cannot be
+undone.
+This feature is available only when lvm_root plugin is installed and enabled.
+.TP
+\fB\-\-umount\fP
+Umount all everything mounted in the buildroot path including the root itself
+that might have been a LVM volume.
+.TP
+\fB\-\-pm-cmd\fP
+Execute following arguments with current package manager with installroot set to
+the buildroot path.
+.TP
+\fB\-\-yum-cmd\fP
+Execute following arguments with yum with installroot set to the buildroot path.
+.TP
+\fB\-\-dnf-cmd\fP
+Execute following arguments with DNF with installroot set to the buildroot path.
+DNF must be installed on the system.
+
 
 
 .SH "OPTIONS"
@@ -115,13 +169,14 @@ see site-defaults.cfg for more information.
 .TP
 \fB\-r\fR \fICHROOT\fP, \fB\-\-root\fR=\fICHROOT\fP
 Uses specified chroot configuration as defined in
-/etc/mock/<\fIchroot\fP>.cfg. If none specified, uses the chroot linked
-to by /etc/mock/default.cfg
+/etc/mock/<\fICHROOT\fP>.cfg. Optionally if CHROOT ends in '.cfg', it is
+interpreted as full path to config file. If none specified, uses the chroot
+config linked to by /etc/mock/default.cfg.
 .TP
 \fB\-\-offline\fR
 Run in 'offline' mode where we tell 'yum' to run completely from local cache. Also disables cache expiry for the mock yum cache.
 .TP
-\fB\-\-no\-clean\fR
+\fB-n\fR, \fB\-\-no\-clean\fR
 Do not clean chroot before building package.
 .TP
 \fB\-\-cleanup\-after\fR
@@ -154,6 +209,12 @@ Disable configure OPTION for build.  This option may be used multiple times.  Fo
 
 \fB\-\-without=anchovies\fR
 .TP
+\fB\-\-old-chroot\fR
+use old chroot instead of systemd-nspawn.
+.TP
+\fB\-\-new-chroot\fR
+use new chroot (systemd-nspawn) - this is experimental and will break existing scripts.
+.T
 \fB\-\-resultdir=\fR\fIRESULTDIR\fP
 Change directory where resulting files (RPMs and build logs) are written. Resultdir can contain python-string substitutions for any variable in the chroot config. For example:
 
@@ -191,6 +252,29 @@ Disable the specified plugin.  This option may be used multiple times.
 .TP
 \fB\-\-plugin-option \fR\fIPLUGIN\fR\fB:\fR\fIKEY\fR\fB=\fR\fIVALUE\fP
 Set plugin specific parameter. This option may be used multiple times.
+.TP
+\fB\-\-yum\fR
+Use yum as the current package manager. This is the default.
+.TP
+\fB\-\-dnf\fR
+Use DNF as the current package manager.
+.TP
+\fB\-\-enablerepo=REPO\fR
+Pass \fB\-\-enablerepo\fR option to package manager to enable a repository.
+It can be specified multiple times.
+.TP
+\fB\-\-disablerepo=REPO\fR
+Pass \fB\-\-disablerepo\fR option to package manager to disable a repository.
+It can be specified multiple times.
+.TP
+\fB\-\-short-circuit=\fR\fISTAGE\fR
+Use rpmbuild's short-circuit mechanism to skip already executed stages of build.
+It doesn't produce RPMs, it's useful only for debugging packaging. Implies
+\fI\-\-no-clean\fR. STAGE specifies which stage will be executed as the first.
+Available values: prep, build, install, binary.
+.TP
+\fB\-\-rpmbuild-opts=OPTIONS\fR
+Pass additional options to rpmbuild. To pass more options, put them in quotes.
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Show usage information and exit.
