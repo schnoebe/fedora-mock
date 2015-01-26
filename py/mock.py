@@ -36,6 +36,7 @@ from __future__ import print_function
 
 # library imports
 import grp
+import glob
 import logging
 import logging.config
 import os
@@ -43,8 +44,9 @@ import os.path
 import pwd
 import sys
 import time
+import shutil
+
 from optparse import OptionParser
-from textwrap import dedent
 
 try:
     import configparser
@@ -174,6 +176,9 @@ def command_parse():
     parser.add_option("--umount", action="store_const", const="umount",
                       dest="mode", help="Umount the buildroot if it's "
                       "mounted from separate device (LVM)")
+    parser.add_option("--mount", action="store_const", const="mount",
+                      dest="mode", help="Mount the buildroot if it's "
+                      "mounted from separate device (LVM)")
 
     # options
     parser.add_option("-r", "--root", action="store", type="string", dest="chroot",
@@ -208,6 +213,8 @@ def command_parse():
     parser.add_option("-D", "--define", action="append", dest="rpmmacros",
                       default=[], type="string", metavar="'MACRO EXPR'",
                       help="define an rpm macro (may be used more than once)")
+    parser.add_option("--macro-file", action="store", type="string", dest="macrofile",
+                      default=[], help="Use pre-defined rpm macro file")
     parser.add_option("--with", action="append", dest="rpmwith",
                       default=[], type="string", metavar="option",
                       help="enable configure option for build (may be used more than once)")
@@ -239,6 +246,8 @@ def command_parse():
     parser.add_option("--sources", action="store",
                       help="Specifies sources (either a single file or a directory of files)"
                       "to use to build an SRPM (used only with --buildsrpm)")
+    parser.add_option("--symlink-dereference", action="store_true", dest="symlink_dereference",
+                      default=False, help="Follow symlinks in sources (used only with --buildsrpm)")
     parser.add_option("--short-circuit", action="store", type='choice',
                       choices=['prep', 'install', 'build', 'binary'],
                       help="Pass short-circuit option to rpmbuild to skip already "
@@ -258,6 +267,8 @@ def command_parse():
     parser.add_option("--new-chroot", action="store_true", dest="new_chroot",
                       default=False,
                       help="use new chroot (systemd-nspawn).")
+    parser.add_option("--postinstall", action="store_true", dest="post_install",
+                      default=False, help="Try to install built packages in the same buildroot right after build")
 
     # verbosity
     parser.add_option("-v", "--verbose", action="store_const", const=2,
@@ -335,52 +346,6 @@ def command_parse():
     return (options, args)
 
 @traceLog()
-def load_config(config_path, name, uidManager):
-    config_opts = util.setup_default_config_opts(uidManager.unprivUid,
-            __VERSION__, PKGPYTHONDIR)
-
-    # array to save config paths
-    config_opts['config_paths'] = []
-    config_opts['chroot_name'] = name
-
-    # Read in the config files: default, and then user specified
-    if name.endswith('.cfg'):
-        # If the .cfg is explicitly specified we take the root arg to
-        # specify a path, rather than looking it up in the configdir.
-        chroot_cfg_path = name
-    else:
-        chroot_cfg_path = '%s/%s.cfg' % (config_path, name)
-    for cfg in (os.path.join(config_path, 'site-defaults.cfg'),
-                chroot_cfg_path):
-        if os.path.exists(cfg):
-            config_opts['config_paths'].append(cfg)
-            util.update_config_from_file(config_opts, cfg, uidManager)
-        else:
-            log.error("Could not find required config file: %s" % cfg)
-            if name == "default":
-                log.error("  Did you forget to specify the chroot to use with '-r'?")
-            if "/" in cfg:
-                log.error("  If you're trying to specify a path, include the .cfg extension, e.g. -r ./target.cfg")
-            sys.exit(1)
-
-    # Read user specific config file
-    cfg = os.path.join(os.path.expanduser('~' + pwd.getpwuid(os.getuid())[0]),
-            '.mock/user.cfg')
-    if os.path.exists(cfg):
-        config_opts['config_paths'].append(cfg)
-        util.update_config_from_file(config_opts, cfg, uidManager)
-
-    # default /etc/hosts contents
-    if (not config_opts['use_host_resolv']
-        and 'etc/hosts' not in config_opts['files']):
-        config_opts['files']['etc/hosts'] = dedent('''\
-            127.0.0.1 localhost localhost.localdomain
-            ::1       localhost localhost.localdomain localhost6 localhost6.localdomain6
-            ''')
-
-    return config_opts
-
-@traceLog()
 def setup_logging(log_ini, config_opts, options):
     if not os.path.exists(log_ini):
         log.error("Could not find required logging config file: %s" % log_ini)
@@ -452,7 +417,7 @@ def check_arch_combination(target_arch, config_opts):
     host_arch = os.uname()[-1]
     if host_arch not in legal:
         raise mockbuild.exception.InvalidArchitecture(
-            "Cannot build target %s on arch %s" % (target_arch, host_arch))
+            "Cannot build target {0} on arch {1}, because it is not listed in legal_host_arches {2}".format(target_arch, host_arch, legal))
 
 @traceLog()
 def rebuild_generic(items, commands, buildroot, config_opts, cmd, post=None, clean=True):
@@ -500,7 +465,15 @@ def do_rebuild(config_opts, commands, buildroot, srpms):
         commands.build(srpm, timeout=config_opts['rpmbuild_timeout'],
                        check=config_opts['check'])
 
-    def createrepo_on_rpms():
+    def post_build():
+        if config_opts['post_install']:
+            if buildroot.chroot_was_initialized:
+                commands.install_build_results(commands.build_results)
+            else:
+                commands.init()
+                commands.install_build_results(commands.build_results)
+                commands.clean()
+
         if config_opts["createrepo_on_rpms"]:
             log.info("Running createrepo on binary rpms in resultdir")
             buildroot.uid_manager.dropPrivsTemp()
@@ -510,20 +483,21 @@ def do_rebuild(config_opts, commands, buildroot, srpms):
             buildroot.uid_manager.restorePrivs()
 
     rebuild_generic(srpms, commands, buildroot, config_opts, cmd=build,
-                    post=createrepo_on_rpms, clean=clean)
+                    post=post_build, clean=clean)
 
 @traceLog()
 def do_buildsrpm(config_opts, commands, buildroot, options, args):
     # verify the input command line arguments actually exist
     if not os.path.isfile(options.spec):
         raise BadCmdline("Input specfile does not exist: %s" % options.spec)
-    if not os.path.isdir(options.sources):
-        raise BadCmdline("Input sources directory does not exist: %s" % options.sources)
+    if not os.path.isdir(options.sources) and not os.path.isfile(options.sources):
+        raise BadCmdline("Input sources directory or file does not exist: %s" % options.sources)
     clean = config_opts['clean']
 
     def cmd(spec):
         commands.buildsrpm(spec=spec, sources=options.sources,
-                           timeout=config_opts['rpmbuild_timeout'])
+                           timeout=config_opts['rpmbuild_timeout'],
+                           follow_links=options.symlink_dereference)
     return rebuild_generic([options.spec], commands, buildroot, config_opts,
                            cmd=cmd, post=None, clean=clean)
 
@@ -601,7 +575,7 @@ def main():
     if options.configdir:
         config_path = options.configdir
 
-    config_opts = load_config(config_path, options.chroot, uidManager)
+    config_opts = util.load_config(config_path, options.chroot, uidManager, __VERSION__, PKGPYTHONDIR)
 
     # cmdline options override config options
     util.set_config_opts_per_cmdline(config_opts, options, args)
@@ -674,7 +648,9 @@ def run_command(options, args, config_opts, commands, buildroot, state):
     # Fetch and prepare sources from SCM
     if config_opts['scm']:
         scmWorker = mockbuild.scm.scmWorker(log, config_opts['scm_opts'], config_opts['macros'])
+        buildroot.uid_manager.dropPrivsTemp()
         scmWorker.get_sources()
+        buildroot.uid_manager.restorePrivs()
         (options.sources, options.spec) = scmWorker.prepare_sources()
 
     if options.mode == 'init':
@@ -690,15 +666,13 @@ def run_command(options, args, config_opts, commands, buildroot, state):
 
     elif options.mode == 'shell':
         if len(args):
-            cmd = ' '.join(args)
+            cmd = args
         else:
             cmd = None
         commands.init(do_log=False)
         sys.exit(commands.shell(options, cmd))
 
     elif options.mode == 'chroot':
-        if not os.path.exists(buildroot.make_chroot_path()):
-            raise mockbuild.exception.ChrootNotInitialized("chroot %s not initialized!" % buildroot.make_chroot_path())
         if len(args) == 0:
             log.critical("You must specify a command to run with --chroot")
             sys.exit(50)
@@ -749,7 +723,6 @@ def run_command(options, args, config_opts, commands, buildroot, state):
 
     elif options.mode == 'copyin':
         commands.init()
-        #uidManager.dropPrivsForever()
         if len(args) < 2:
             log.critical("Must have source and destinations for copyin")
             sys.exit(50)
@@ -758,38 +731,54 @@ def run_command(options, args, config_opts, commands, buildroot, state):
             log.critical("multiple source files and %s is not a directory!" % dest)
             sys.exit(50)
         args = args[:-1]
-        import shutil
         for src in args:
+            if not os.path.lexists(src):
+                log.critical("No such file or directory: {0}".format(src))
+                sys.exit(50)
             log.info("copying %s to %s" % (src, dest))
             if os.path.isdir(src):
+                if os.path.exists(dest):
+                    path_suffix = os.path.split(src)[1]
+                    dest = os.path.join(dest, path_suffix)
+                    if os.path.exists(dest):
+                        log.critical("Destination %{0} already exist!".format(dest))
+                        sys.exit(50)
+                print(src); print(dest)
                 shutil.copytree(src, dest)
             else:
                 shutil.copy(src, dest)
+        buildroot.chown_home_dir()
 
     elif options.mode == 'copyout':
         commands.init()
         buildroot.uid_manager.dropPrivsTemp()
-        if len(args) < 2:
-            log.critical("Must have source and destinations for copyout")
-            sys.exit(50)
-        dest = args[-1]
-        if len(args) > 2 and not os.path.isdir(dest):
-            log.critical("multiple source files and %s is not a directory!" % dest)
-            sys.exit(50)
-        args = args[:-1]
-        import shutil
-        for f in args:
-            src = buildroot.make_chroot_path(f)
-            log.info("copying %s to %s" % (src, dest))
-            if os.path.isdir(src):
-                shutil.copytree(src, dest, symlinks=True)
-            else:
-                if os.path.islink(src):
-                    linkto = os.readlink(src)
-                    os.symlink(linkto, dst)
+        try:
+            if len(args) < 2:
+                log.critical("Must have source and destinations for copyout")
+                sys.exit(50)
+            dest = args[-1]
+            sources = []
+            for arg in args[:-1]:
+                matches = glob.glob(buildroot.make_chroot_path(arg.replace('~', buildroot.homedir)))
+                if not matches:
+                    log.critical("%s not found" % arg)
+                    sys.exit(50)
+                sources += matches
+            if len(sources) > 1 and not os.path.isdir(dest):
+                log.critical("multiple source files and %s is not a directory!" % dest)
+                sys.exit(50)
+            for src in sources:
+                log.info("copying %s to %s" % (src, dest))
+                if os.path.isdir(src):
+                    shutil.copytree(src, dest, symlinks=True)
                 else:
-                    shutil.copy(src, dest)
-        buildroot.uid_manager.restorePrivs()
+                    if os.path.islink(src):
+                        linkto = os.readlink(src)
+                        os.symlink(linkto, dest)
+                    else:
+                        shutil.copy(src, dest)
+        finally:
+            buildroot.uid_manager.restorePrivs()
 
     elif options.mode in ('pm-cmd', 'yum-cmd', 'dnf-cmd'):
         log.info('Running {0} {1}'.format(buildroot.pkg_manager.command,
@@ -813,6 +802,8 @@ def run_command(options, args, config_opts, commands, buildroot, state):
         buildroot.plugins.call_hooks('remove_snapshot', args[0], required=True)
     elif options.mode == 'umount':
         buildroot.plugins.call_hooks('umount_root')
+    elif options.mode == 'mount':
+        buildroot.plugins.call_hooks('mount_root')
 
     buildroot._nuke_rpm_db()
     state.finish("run")

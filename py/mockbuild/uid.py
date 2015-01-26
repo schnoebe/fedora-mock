@@ -3,12 +3,10 @@
 # Written by Michael Brown
 # Copyright (C) 2007 Michael E Brown <mebrown@michaels-house.net>
 
-# python library imports
 import os
 import ctypes
 
-# our imports
-from mockbuild.trace_decorator import traceLog
+from .trace_decorator import traceLog
 
 _libc = ctypes.CDLL(None, use_errno=True)
 
@@ -71,13 +69,19 @@ class UidManager(object):
         setresuid(uid, uid, 0)
 
     @traceLog()
-    def changeOwner(self, path, uid=None, gid=None):
+    def changeOwner(self, path, uid=None, gid=None, recursive=False):
         self._elevatePrivs()
         if uid is None:
             uid = self.unprivUid
         if gid is None:
             gid = self.unprivGid
         os.chown(path, uid, gid)
+        if recursive:
+            for root, dirs, files in os.walk(path):
+                for d in dirs:
+                    os.chown(os.path.join(root, d), uid, gid)
+                for f in files:
+                    os.chown(os.path.join(root, f), uid, gid)
 
 def getresuid():
     ruid = ctypes.c_long()

@@ -41,18 +41,32 @@ class Tmpfs(object):
         if self.maxSize:
             self.optArgs += ['-o', 'size=' + self.maxSize]
         plugins.add_hook("mount_root", self._tmpfsMount)
-        plugins.add_hook("postumount", self._tmpfsUmount)
+        plugins.add_hook("postumount", self._tmpfsPostUmount)
         plugins.add_hook("umount_root", self._tmpfsUmount)
-        self.mounted = False
+        if not os.path.ismount(self.buildroot.make_chroot_path()):
+            self.mounted = False
+        else:
+            self.mounted = True
         getLog().info("tmpfs initialized")
 
     @traceLog()
     def _tmpfsMount(self):
         getLog().info("mounting tmpfs at %s." % self.buildroot.make_chroot_path())
-        mountCmd = ["mount", "-n", "-t", "tmpfs"] + self.optArgs + \
-                   ["mock_chroot_tmpfs", self.buildroot.make_chroot_path()]
-        mockbuild.util.do(mountCmd, shell=False)
+
+        if not self.mounted:
+            mountCmd = ["mount", "-n", "-t", "tmpfs"] + self.optArgs + \
+                       ["mock_chroot_tmpfs", self.buildroot.make_chroot_path()]
+            mockbuild.util.do(mountCmd, shell=False)
+        else:
+            getLog().info("reusing tmpfs at %s." % self.buildroot.make_chroot_path())
         self.mounted = True
+
+    @traceLog()
+    def _tmpfsPostUmount(self):
+        if "keep_mounted" in self.conf and self.conf["keep_mounted"]:
+            self.mounted = False
+        else:
+            self._tmpfsUmount()
 
     @traceLog()
     def _tmpfsUmount(self):
@@ -66,7 +80,7 @@ class Tmpfs(object):
         try:
             mockbuild.util.do(umountCmd, shell=False)
         except:
-            getLog().warning("tmpfs-plugin: exception while umounting tmpfs! (cwd: %s)" % os.getcwd())
+            getLog().warning("tmpfs-plugin: exception while umounting tmpfs! (cwd: %s)" % mockbuild.util.pretty_getcwd())
             force = True
 
         if force:
@@ -75,5 +89,5 @@ class Tmpfs(object):
             try:
                 mockbuild.util.do(umountCmd, shell=False)
             except:
-                getLog().warning("tmpfs-plugin: exception while force umounting tmpfs! (cwd: %s)" % os.getcwd())
+                getLog().warning("tmpfs-plugin: exception while force umounting tmpfs! (cwd: %s)" % mockbuild.util.pretty_getcwd())
         self.mounted = False

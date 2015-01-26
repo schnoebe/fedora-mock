@@ -2,9 +2,9 @@ import os
 import os.path
 import grp
 
-import mockbuild.util
-import mockbuild.exception
-from mockbuild.trace_decorator import traceLog
+from . import util
+from . import exception
+from .trace_decorator import traceLog
 
 class MountPoint(object):
     '''base class for mounts'''
@@ -27,7 +27,8 @@ class FileSystemMountPoint(MountPoint):
             raise RuntimeError("no path specified for mountpoint")
         if not filetype:
             raise RuntimeError("no filetype specified for mountpoint")
-        if filetype == 'pts' or filetype == 'proc' or filetype == 'sys':
+        if filetype == 'pts' or filetype == 'proc' or filetype == 'sys' or \
+            filetype == 'sysfs' or filetype == 'tmpfs' or filetype == 'devpts':
             device = filetype
         if not device:
             raise RuntimeError("no device file specified for mountpoint")
@@ -48,7 +49,7 @@ class FileSystemMountPoint(MountPoint):
         if self.options:
             cmd += ['-o', self.options ]
         cmd += [self.device, self.path]
-        mockbuild.util.do(cmd)
+        util.do(cmd)
         self.mounted = True
         return True
 
@@ -58,7 +59,7 @@ class FileSystemMountPoint(MountPoint):
             return
         cmd = ['/bin/umount', '-n', '-l', self.path]
         try:
-            mockbuild.util.do(cmd)
+            util.do(cmd)
         except mockbuild.exception.Error as e:
             return False
         self.mounted = False
@@ -78,7 +79,7 @@ class BindMountPoint(MountPoint):
         if not self.mounted:
             cmd = ['/bin/mount', '-n',
                    '--bind', self.srcpath, self.bindpath ]
-            mockbuild.util.do(cmd)
+            util.do(cmd)
         self.mounted = True
         return True
 
@@ -87,7 +88,7 @@ class BindMountPoint(MountPoint):
         if self.mounted:
             cmd = ['/bin/umount', '-n', self.bindpath ]
             try:
-                mockbuild.util.do(cmd)
+                util.do(cmd)
             except mockbuild.exception.Error as e:
                 return False
         self.mounted = False
@@ -99,15 +100,16 @@ class Mounts(object):
     def __init__(self, rootObj):
         self.rootObj = rootObj
         self.mounts = []
-        if not mockbuild.util.USE_NSPAWN:
+        if not util.USE_NSPAWN:
             self.mounts = [ FileSystemMountPoint(filetype='proc', device='mock_chroot_proc', path=rootObj.make_chroot_path('/proc')),
                         FileSystemMountPoint(filetype='sysfs', device='mock_chroot_sys', path=rootObj.make_chroot_path('/sys')),
-                        FileSystemMountPoint(filetype='tmpfs', device='mock_chroot_shmfs', path=rootObj.make_chroot_path('/dev/shm')),
                       ]
-            opts = 'gid=%d,mode=0620,ptmxmode=0666' % grp.getgrnam('tty').gr_gid
-            if mockbuild.util.cmpKernelVer(os.uname()[2], '2.6.29') >= 0:
-                opts += ',newinstance'
-            self.mounts.append(FileSystemMountPoint(filetype='devpts', device='mock_chroot_devpts', path=rootObj.make_chroot_path('/dev/pts'), options=opts))
+            if rootObj.config['internal_dev_setup']:
+                self.mounts.append(FileSystemMountPoint(filetype='tmpfs', device='mock_chroot_shmfs', path=rootObj.make_chroot_path('/dev/shm')))
+                opts = 'gid=%d,mode=0620,ptmxmode=0666' % grp.getgrnam('tty').gr_gid
+                if util.cmpKernelVer(os.uname()[2], '2.6.29') >= 0:
+                    opts += ',newinstance'
+                    self.mounts.append(FileSystemMountPoint(filetype='devpts', device='mock_chroot_devpts', path=rootObj.make_chroot_path('/dev/pts'), options=opts))
 
     @traceLog()
     def add(self, mount):

@@ -32,18 +32,19 @@ _mock()
     declare -F _split_longopt &>/dev/null && _split_longopt && split=true
 
     case "$prev" in
-        -h|--help|--copyin|--copyout|--arch|-D|--define|--with|--without|\
-        --uniqueext|--rpmbuild_timeout|--sources|--cwd|--scm-option|--snapshot|\
+        -h|--help|--copyout|--arch|-D|--define|--with|--without|\
+        --uniqueext|--rpmbuild_timeout|--cwd|--scm-option|--snapshot|\
         -l|--list-snapshots|--rollback-to|--remove-snapshot|--umount|--yum|\
         --dnf|--pm-cmd|--yum-cmd|--dnf-cmd|--enablerepo|--disablerepo|\
-        --rpmbuild-opts)
+        --rpmbuild-opts|--new-chroot|--old-chroot|--print-root-path|--trace|\
+        --mount|--nocheck|--symlink-dereference|--postinstall)
             return 0
             ;;
         -r|--root)
             _mock_root $cfgdir
             return 0
             ;;
-        --configdir|--resultdir)
+        --configdir|--resultdir|--copyin|--sources)
             local IFS=$'\n'
             COMPREPLY=( $( compgen -d -- "$cur" ) )
             return 0
@@ -76,7 +77,7 @@ _mock()
             ;;
         -i|--install|install)
             local IFS=$'\n'
-            COMPREPLY=( $( compgen -f -o plusdirs -X '!*.rpm' -X '*src.rpm' \
+            COMPREPLY=( $( compgen -f -o plusdirs -G '*.rpm,v' -X '*src.rpm' \
                 -- "$cur" ) )
             [[ $cur != */* && $cur != [.~]* ]] && \
                 declare -F _yum_list &>/dev/null && _yum_list all "$cur"
@@ -101,11 +102,12 @@ _mock()
             --no-clean --cleanup-after --no-cleanup-after --arch --target
             --define --with --without --resultdir --uniqueext --configdir
             --rpmbuild_timeout --unpriv --cwd --spec --sources --verbose
-            --quiet --trace --enable-plugin --disable-plugin
+            --quiet --trace --enable-plugin --disable-plugin --nocheck
             --print-root-path --scm-enable --scm-option --yum --dnf --pm-cmd
             --yum-cmd --dnf-cmd --enablerepo --disablerepo --short-circuit
             --rpmbuild-opts --snapshot --list-snapshots --remove-snapshot
-            --rollback-to --umount" -- "$cur" ) )
+            --rollback-to --umount --mount --old-chroot --new-chroot
+            --symlink-dereference --postinstall" -- "$cur" ) )
         return 0
     fi
 

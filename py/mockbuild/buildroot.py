@@ -8,12 +8,12 @@ import shutil
 import stat
 import tempfile
 
-from mockbuild import util
-from mockbuild import mounts
-from mockbuild.exception import BuildRootLocked, RootError, \
+from . import util
+from . import mounts
+from .exception import BuildRootLocked, RootError, \
                                 ResultDirNotAccessible, Error
-from mockbuild.package_manager import PackageManager
-from mockbuild.trace_decorator import getLog, traceLog
+from .package_manager import PackageManager
+from .trace_decorator import getLog, traceLog
 
 class Buildroot(object):
     @traceLog()
@@ -138,6 +138,7 @@ class Buildroot(object):
             if not util.USE_NSPAWN:
                 self._setup_timezone()
             self._init_pkg_management()
+            self._setup_files_postinstall()
             self._make_build_user()
             self._setup_build_dirs()
         elif prebuild:
@@ -145,7 +146,8 @@ class Buildroot(object):
             # and there's no garbage left by previous build
             self._make_build_user()
             self._setup_build_dirs()
-            if self.config['online'] and self.config['update_before_build']:
+            if (self.config['online'] and self.config['update_before_build']
+                    and self.config['clean']):
                 update_state = "{0} update".format(self.pkg_manager.name)
                 self.state.start(update_state)
                 self.pkg_manager.update()
@@ -196,7 +198,7 @@ class Buildroot(object):
 
     @traceLog()
     def _init_pkg_management(self):
-        update_state = '{0} update'.format(self.pkg_manager.command)
+        update_state = '{0} install'.format(self.pkg_manager.name)
         self.state.start(update_state)
         cmd = self.config['chroot_setup_cmd']
         if isinstance(cmd, util.basestring):
@@ -209,9 +211,19 @@ class Buildroot(object):
         if not os.path.exists(self.make_chroot_path('usr/sbin/useradd')):
             raise RootError("Could not find useradd in chroot, maybe the install failed?")
 
-        dets = {'uid': str(self.chrootuid), 'gid': str(self.chrootgid), 'user': self.chrootuser, 'group': self.chrootgroup, 'home': self.homedir}
+        dets = {'uid': str(self.chrootuid), 'gid': str(self.chrootgid),
+                'user': self.chrootuser, 'group': self.chrootgroup, 'home': self.homedir}
+
+        excluded = [self.make_chroot_path(self.homedir, path)
+                    for path in self.config['exclude_from_homedir_cleanup']]
+        util.rmtree(self.make_chroot_path(self.homedir),
+                    selinux=self.selinux, exclude=excluded)
 
         # ok for these two to fail
+        if self.config['clean']:
+            self.doChroot(['/usr/sbin/userdel', '-r', '-f', dets['user']], shell=False, raiseExc=False)
+        else:
+            self.doChroot(['/usr/sbin/userdel', '-f', dets['user']], shell=False, raiseExc=False)
         self.doChroot(['/usr/sbin/userdel', '-r', '-f', dets['user']], shell=False, raiseExc=False)
         self.doChroot(['/usr/sbin/groupdel', dets['group']], shell=False, raiseExc=False)
 
@@ -340,6 +352,17 @@ class Buildroot(object):
             util.mkdirIfAbsent(self.make_chroot_path(item))
 
     @traceLog()
+    def chown_home_dir(self):
+        """ set ownership of homedir and subdirectories to mockbuild user """
+        for (dirpath, dirnames, filenames) in os.walk(self.make_chroot_path(self.homedir)):
+            for path in dirnames + filenames:
+                filepath = os.path.join(dirpath, path)
+                # ignore broken symlinks
+                if os.path.exists(filepath):
+                    os.lchown(filepath, self.chrootuid, self.chrootgid)
+                    os.chmod(filepath, 0o755)
+
+    @traceLog()
     def _setup_build_dirs(self):
         build_dirs = ['RPMS', 'SPECS', 'SRPMS', 'SOURCES', 'BUILD', 'BUILDROOT',
                       'originals']
@@ -347,16 +370,18 @@ class Buildroot(object):
         try:
             for item in build_dirs:
                 util.mkdirIfAbsent(self.make_chroot_path(self.builddir, item))
-
-            # change ownership so we can write to build home dir
-            for (dirpath, dirnames, filenames) in os.walk(self.make_chroot_path(self.homedir)):
-                for path in dirnames + filenames:
-                    os.chown(os.path.join(dirpath, path), self.chrootuid, -1)
-                    os.chmod(os.path.join(dirpath, path), 0o755)
-
+            if self.config['clean']:
+                self.chown_home_dir()
             # rpmmacros default
             macrofile_out = self.make_chroot_path(self.homedir, ".rpmmacros")
             rpmmacros = open(macrofile_out, 'w+')
+
+            # user specific from rpm macro file defenitions first
+            if 'macrofile' in self.config:
+                macro_conf = open(self.config['macrofile'], 'r')
+                rpmmacros.write("%s\n\n" % macro_conf.read())
+                macro_conf.close()
+
             for key, value in list(self.config['macros'].items()):
                 rpmmacros.write("%s %s\n" % (key, value))
             rpmmacros.close()
@@ -417,8 +442,12 @@ class Buildroot(object):
     def _setup_files(self):
         #self.root_log.debug('touch required files')
         for item in [self.make_chroot_path('etc', 'fstab'),
-                     self.make_chroot_path('var', 'log', 'yum.log'),
-                     self.make_chroot_path('etc', 'os-release')]:
+                     self.make_chroot_path('var', 'log', 'yum.log')]:
+            util.touch(item)
+
+    @traceLog()
+    def _setup_files_postinstall(self):
+        for item in [self.make_chroot_path('etc', 'os-release')]:
             util.touch(item)
 
     @traceLog()
@@ -443,20 +472,18 @@ class Buildroot(object):
 
         if self.config['nosync']:
             target_arch = self.config['target_arch']
-            copied_lib64 = False
             copied_lib = copy_nosync()
-            force = self.config['nosync_force']
-            if target_arch in multilib:
-                copied_lib64 = copy_nosync(lib64=True)
-                if not force and copied_lib != copied_lib64:
-                    self.root_log.warn("For multilib systems, both architectures "
-                                       "of nosync library need to be installed")
-                    return
+            copied_lib64 = copy_nosync(lib64=True)
             if not copied_lib and not copied_lib64:
                 self.root_log.warn("nosync is enabled but the library wasn't "
                                    "found on the system")
-            else:
-                self.env['LD_PRELOAD'] = os.path.join(tmp_libdir, 'nosync.so')
+                return
+            if (target_arch in multilib and not self.config['nosync_force']
+                    and copied_lib != copied_lib64):
+                self.root_log.warn("For multilib systems, both architectures "
+                                   "of nosync library need to be installed")
+                return
+            self.env['LD_PRELOAD'] = os.path.join(tmp_libdir, 'nosync.so')
 
 
     @traceLog()

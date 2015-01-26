@@ -2,6 +2,7 @@ import os
 import lvm
 import fcntl
 import errno
+import re
 import time
 
 from contextlib import contextmanager
@@ -35,7 +36,10 @@ def volume_group(name, mode='r'):
 
 def lvm_do(*args, **kwargs):
     with restored_ipc_ns():
-        util.do(*args, **kwargs)
+        env = os.environ
+        env['LC_ALL'] = 'C'
+        output = util.do(*args, returnOutput=True, env=env, **kwargs)
+    return output
 
 def current_mounts():
     with open("/proc/mounts") as proc_mounts:
@@ -84,7 +88,7 @@ class LvmPlugin(object):
     def __init__(self, plugins, lvm_conf, buildroot):
         if not util.original_ipc_ns or not util.have_setns:
             raise LvmError("Cannot initialize setns support, which is "
-                               "needed by LVM plugin")
+                           "needed by LVM plugin")
         self.buildroot = buildroot
         self.lvm_conf = lvm_conf
         self.vg_name = lvm_conf.get('volume_group')
@@ -218,6 +222,26 @@ class LvmPlugin(object):
         mkfs_args = self.lvm_conf.get('mkfs_args', [])
         util.do([mkfs, self.get_lv_path()] + mkfs_args)
 
+    def allocated_pool_data(self):
+        """ Returns percent of allocated space in thin pool """
+        pool_id = self.vg_name + '/' + self.pool_name
+        output = lvm_do(['lvdisplay', pool_id])
+        compiled_re = re.compile(r'.*Allocated pool data\s*([0-9.]*)%$.*', re.DOTALL | re.MULTILINE)
+        r_match = compiled_re.match(output)
+        if r_match:
+            return float(r_match.group(1))
+        return None
+
+    def allocated_pool_metadata(self):
+        """ Returns percent of allocated metadata in thin pool """
+        pool_id = self.vg_name + '/' + self.pool_name
+        output = lvm_do(['lvdisplay', pool_id])
+        compiled_re = re.compile(r'.*Allocated metadata\s*([0-9.]*)%$.*', re.DOTALL | re.MULTILINE)
+        r_match = compiled_re.match(output)
+        if r_match:
+            return float(r_match.group(1))
+        return None
+
     def force_umount_root(self):
         self.buildroot.root_log.warning("Forcibly unmounting root volume")
         util.do(['umount', '-l', self.root_path], env=self.buildroot.env)
@@ -246,6 +270,19 @@ class LvmPlugin(object):
                 '-n', self.head_lv, '--setactivationskip', 'n'])
         self.buildroot.root_log.info("rolled back to {name} snapshot"\
                                      .format(name=self.remove_prefix(snapshot_name)))
+
+    def check_pool_size(self):
+        size_data = self.allocated_pool_data()
+        size_metadata = self.allocated_pool_metadata()
+        self.buildroot.root_log.info("LVM plugin enabled. Allocated pool data: {0}%. Allocated metadata: {1}%.".format(size_data, size_metadata))
+        if (('check_size' not in self.lvm_conf) or (('check_size' in self.lvm_conf) and (self.lvm_conf['check_size']))) and \
+            ((size_metadata and size_metadata > 90) or (size_data and size_data > 90)):
+            raise LvmError("Thin pool {0}/{1} is over 90%. Please enlarge it.".format(self.vg_name, self.pool_name))
+        else:
+            if  size_metadata and size_metadata > 75:
+                self.buildroot.root_log.warning("LVM Thin pool metadata are nearly filled up ({0}%). You may experience weird errors. Consider growing up your thin pool.".format(size_data))
+            if size_data and size_data > 75:
+                self.buildroot.root_log.warning("LVM Thin pool is nearly filled up ({0}%). You may experience weird errors. Consider growing up your thin pool.".format(size_data))
 
     def hook_mount_root(self):
         def acquired():
@@ -276,6 +313,7 @@ class LvmPlugin(object):
             self.create_head(self.get_current_snapshot())
 
         self.prepare_mount()
+        self.check_pool_size()
         self.mount.mount()
 
     def hook_umount_root(self):
@@ -296,9 +334,9 @@ class LvmPlugin(object):
         self.lock.lock(exclusive=False)
 
     def hook_scrub(self, what):
-        self.pool_lock.lock(exclusive=True)
         if what not in ('lvm', 'all'):
             return
+        self.pool_lock.lock(exclusive=True)
         with volume_group(self.vg_name, mode='w+') as vg:
             lvs = vg.listLVs()
             for lv in lvs:
@@ -309,15 +347,18 @@ class LvmPlugin(object):
                                 util.do(['umount', '-l', src])
                     except lvm.LibLVMError:
                         pass
-                    self.buildroot.root_log.info(
-                            "removing {0} volume".format(lv.getName()))
+                    self.buildroot.root_log.info("removing {0} volume".format(lv.getName()))
                     lv.remove()
             remaining = [lv for lv in vg.listLVs() if lv.getAttr()[0] == 'V' and
                          lv.getProperty('pool_lv')[0] == self.pool_name]
             if not remaining:
-                pool = vg.lvFromName(self.pool_name)
-                pool.remove()
-                self.buildroot.root_log.info("deleted LVM cache thinpool")
+                try:
+                    pool = vg.lvFromName(self.pool_name)
+                except lvm.LibLVMError:
+                    pass
+                else:
+                    pool.remove()
+                    self.buildroot.root_log.info("deleted LVM cache thinpool")
         self.unset_current_snapshot()
 
     def hook_list_snapshots(self):

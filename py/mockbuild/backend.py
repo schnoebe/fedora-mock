@@ -9,9 +9,9 @@ import glob
 import os
 import shutil
 
-from mockbuild import util
-from mockbuild.exception import PkgError, BuildError
-from mockbuild.trace_decorator import getLog, traceLog
+from . import util
+from .exception import PkgError
+from .trace_decorator import getLog, traceLog
 
 class Commands(object):
     """Executes mock commands in the buildroot"""
@@ -25,6 +25,8 @@ class Commands(object):
 
         self.rpmbuild_arch = config['rpmbuild_arch']
         self.clean_the_chroot = config['clean']
+
+        self.build_results = []
 
         # config options
         self.configs = config['config_paths']
@@ -226,7 +228,7 @@ class Commands(object):
 
             results = self.rebuild_package(spec_path, timeout, check)
             if results:
-                self.copy_build_results(results)
+                self.build_results.extend(self.copy_build_results(results))
             elif self.config.get('short_circuit'):
                 self.buildroot.root_log.info("Short circuit builds don't produce RPMs")
             else:
@@ -240,7 +242,6 @@ class Commands(object):
             # tell caching we are done building
             self.plugins.call_hooks('postbuild')
         self.state.finish(buildstate)
-
 
     @traceLog()
     def shell(self, options, cmd=None):
@@ -259,7 +260,7 @@ class Commands(object):
             ret = util.doshell(chrootPath=self.buildroot.make_chroot_path(),
                                          environ=self.buildroot.env,
                                          uid=uid, gid=gid,
-                                         user=self.buildroot.chrootuser,
+                                         user=None,
                                          cmd=cmd)
         finally:
             log.debug("shell: unmounting all filesystems")
@@ -274,7 +275,7 @@ class Commands(object):
         log = getLog()
         shell = False
         if len(args) == 1:
-            args = args[0]
+            args = [args[0]]
             shell = True
         log.info("Running in chroot: %s" % args)
         self.plugins.call_hooks("prechroot")
@@ -297,7 +298,7 @@ class Commands(object):
     #       -> except hooks. :)
     #
     @traceLog()
-    def buildsrpm(self, spec, sources, timeout):
+    def buildsrpm(self, spec, sources, timeout, follow_links):
         """build an srpm, capture log"""
 
         # tell caching we are building
@@ -315,7 +316,9 @@ class Commands(object):
 
             if os.path.isdir(sources):
                 util.rmtree(self.buildroot.make_chroot_path(self.buildroot.builddir, "SOURCES"))
-                shutil.copytree(sources, self.buildroot.make_chroot_path(self.buildroot.builddir, "SOURCES"), symlinks=True)
+                shutil.copytree(sources,
+                                self.buildroot.make_chroot_path(self.buildroot.builddir, "SOURCES"),
+                                symlinks=(not follow_links))
             else:
                 shutil.copy(sources, self.buildroot.make_chroot_path(self.buildroot.builddir, "SOURCES"))
 
@@ -393,8 +396,8 @@ class Commands(object):
                 shell=False, logger=self.buildroot.build_log, timeout=timeout,
                 uid=self.buildroot.chrootuid, gid=self.buildroot.chrootgid,
                 user=self.buildroot.chrootuser,
-                printOutput=self.config['verbose'])
-        results = glob.glob("%s/%s/SRPMS/*.src.rpm" % (self.make_chroot_path(),
+                printOutput=self.config['print_main_output'])
+        results = glob.glob("%s/%s/SRPMS/*src.rpm" % (self.make_chroot_path(),
                                                        self.buildroot.builddir))
         if len(results) != 1:
             raise PkgError("Expected to find single rebuilt srpm, found %d."
@@ -422,14 +425,14 @@ class Commands(object):
                               .format(self.rpmbuild_arch, check_opt, spec_path,
                                       additional_opts, mode=mode,
                                       command=self.config['rpmbuild_command'])
-        command = [ rpmbuild_cmd, ]
+        command = [rpmbuild_cmd]
         if not util.USE_NSPAWN:
             command = ["bash", "--login", "-c"] + command
         self.buildroot.doChroot(command,
             shell=False, logger=self.buildroot.build_log, timeout=timeout,
             uid=self.buildroot.chrootuid, gid=self.buildroot.chrootgid,
             user=self.buildroot.chrootuser,
-            printOutput=self.config['verbose'])
+            printOutput=self.config['print_main_output'])
         bd_out = self.make_chroot_path(self.buildroot.builddir)
         results = glob.glob(bd_out + '/RPMS/*.rpm')
         results += glob.glob(bd_out + '/SRPMS/*.rpm')
@@ -438,5 +441,23 @@ class Commands(object):
     @traceLog()
     def copy_build_results(self, results):
         self.buildroot.root_log.debug("Copying packages to result dir")
+        ret = []
         for item in results:
             shutil.copy2(item, self.buildroot.resultdir)
+            ret.append(os.path.join(self.buildroot.resultdir, os.path.split(item)[1]))
+        return ret
+
+    @traceLog()
+    def install_build_results(self, results):
+        self.buildroot.root_log.info("Installing built packages")
+        try:
+            self.uid_manager.becomeUser(0, 0)
+
+            pkgs = [pkg for pkg in results if not pkg.endswith("src.rpm")]
+            try:
+                self.install(*pkgs)
+            except:
+                 self.buildroot.root_log.warn("Failed install built packages")
+                 pass
+        finally:
+            self.uid_manager.restorePrivs()

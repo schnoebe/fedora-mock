@@ -26,7 +26,10 @@ bin_PROGRAMS=
 CLEANFILES += $(EXTRA_PROGRAMS)
 
 mocketcdir = $(sysconfdir)/mock
-mocketc_DATA = $(wildcard $(top_srcdir)/etc/mock/*.cfg) $(top_srcdir)/etc/mock/logging.ini
+mocketc_DATA = $(wildcard $(top_srcdir)/etc/mock/epel*.cfg) \
+	       $(wildcard $(top_srcdir)/etc/mock/fedora*.cfg) \
+	       $(top_srcdir)/etc/mock/site-defaults.cfg \
+	       $(top_srcdir)/etc/mock/logging.ini
 
 mockgpgdir = $(sysconfdir)/pki/mock
 mockgpg_DATA = $(wildcard $(top_srcdir)/etc/pki/RPM-GPG-KEY-*)
@@ -48,6 +51,7 @@ pluginsdir = $(pythondir)/mockbuild/plugins
 plugins_PYTHON = \
     py/mockbuild/plugins/bind_mount.py \
     py/mockbuild/plugins/ccache.py     \
+    py/mockbuild/plugins/compress_logs.py \
     py/mockbuild/plugins/package_state.py \
     py/mockbuild/plugins/root_cache.py \
     py/mockbuild/plugins/tmpfs.py \

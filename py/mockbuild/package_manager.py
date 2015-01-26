@@ -3,9 +3,9 @@ import shutil
 
 from textwrap import dedent
 
-from mockbuild import util
-from mockbuild.exception import BuildError
-from mockbuild.trace_decorator import traceLog
+from . import util
+from .exception import BuildError
+from .trace_decorator import traceLog
 
 def PackageManager(config_opts, chroot, plugins):
     pm = config_opts.get('package_manager', 'yum')
@@ -31,14 +31,15 @@ class _PackageManager(object):
 
     @traceLog()
     def build_invocation(self, *args):
+        invocation = []
         if args[0] == 'builddep':
             args = args[1:]
-            invocation = self.builddep_command
+            invocation += self.builddep_command
             common_opts = self.config[self.name + '_builddep_opts']
         else:
             invocation = [self.command]
             common_opts = self.config[self.name + '_common_opts']
-        invocation += ['--installroot', self.buildroot.make_chroot_path()]
+        invocation += ['--installroot', self.buildroot.make_chroot_path('')]
         releasever = self.config['releasever']
         if releasever:
             invocation += ['--releasever', releasever]
@@ -59,7 +60,7 @@ class _PackageManager(object):
         invocation = self.build_invocation(*args)
         self.buildroot.root_log.debug(invocation)
         kwargs['printOutput'] = kwargs.get('printOutput', True)
-        if self.config['verbose'] == 0:
+        if not self.config['print_main_output']:
             kwargs.pop('printOutput', None)
         else:
             kwargs['pty'] = kwargs.get('pty', True)
@@ -98,6 +99,14 @@ class _PackageManager(object):
     def initialize_config(self):
         raise NotImplementedError()
 
+    def replace_in_config(self, config_content):
+        """ expand resultdir in the yum.conf segment of the mock
+        configuration file.
+        """
+        return config_content.replace("%(resultdir)s",\
+                self.config['resultdir'] % self.config)
+
+
 def check_yum_config(config, log):
     if '\nreposdir' not in config:
         log.warn(dedent("""\
@@ -131,6 +140,7 @@ class Yum(_PackageManager):
                            dedent("""\
                            plugins=1
                            pluginconfpath={0}""".format(pluginconf_dir)))
+        config_content = self.replace_in_config(config_content)
 
         check_yum_config(config_content, self.buildroot.root_log)
 
@@ -204,6 +214,8 @@ class Dnf(_PackageManager):
             config_content = self.config['dnf.conf']
         else:
             config_content = self.config['yum.conf']
+        config_content = self.replace_in_config(config_content)
+
         check_yum_config(config_content, self.buildroot.root_log)
         util.mkdirIfAbsent(self.buildroot.make_chroot_path('etc', 'dnf'))
         dnfconf_path = self.buildroot.make_chroot_path('etc', 'dnf', 'dnf.conf')

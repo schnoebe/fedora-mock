@@ -6,31 +6,34 @@
 # Copyright (C) 2007 Michael E Brown <mebrown@michaels-house.net>
 from __future__ import print_function
 
-# python library imports
 import ctypes
 import fcntl
 import os
 import os.path
 import pickle
+import pwd
+import re
 import select
 import shutil
 import signal
 import subprocess
 import sys
+import stat
 import time
 import errno
 import grp
 import locale
 import logging
+import uuid
 from glob import glob
 from ast import literal_eval
+from textwrap import dedent
 
-# our imports
-import mockbuild.exception
-from mockbuild.trace_decorator import traceLog, getLog
-import mockbuild.uid as uid
+from . import exception
+from .trace_decorator import traceLog, getLog
+from . import uid
 
-encoding = locale.getpreferredencoding(False)
+encoding = locale.getpreferredencoding()
 
 try:
     basestring = basestring
@@ -81,9 +84,9 @@ except OSError:
     original_ipc_ns = None
 
 # classes
-class commandTimeoutExpired(mockbuild.exception.Error):
+class commandTimeoutExpired(exception.Error):
     def __init__(self, msg):
-        mockbuild.exception.Error.__init__(self, msg)
+        exception.Error.__init__(self, msg)
         self.msg = msg
         self.resultcode = 10
 
@@ -109,7 +112,7 @@ def mkdirIfAbsent(*args):
             except OSError as e:
                 if e.errno != errno.EEXIST:
                     getLog().exception("Could not create dir %s. Error: %s" % (dirName, e))
-                    raise mockbuild.exception.Error("Could not create dir %s. Error: %s" % (dirName, e))
+                    raise exception.Error("Could not create dir %s. Error: %s" % (dirName, e))
 
 @traceLog()
 def touch(fileName):
@@ -118,35 +121,58 @@ def touch(fileName):
     fo.close()
 
 @traceLog()
-def rmtree(path, *args, **kargs):
-    """version os shutil.rmtree that ignores no-such-file-or-directory errors,
-       and tries harder if it finds immutable files"""
-    do_selinux_ops = False
-    if 'selinux' in kargs:
-        do_selinux_ops = kargs['selinux']
-        del kargs['selinux']
-    tryAgain = 1
+def rmtree(path, selinux=False, exclude=()):
+    """Version of shutil.rmtree that ignores no-such-file-or-directory errors,
+       tries harder if it finds immutable files and supports excluding paths"""
+    if os.path.islink(path):
+        raise OSError("Cannot call rmtree on a symbolic link")
+    try_again = True
     retries = 0
-    failedFilename = None
-    getLog().debug("remove tree: %s" % path)
-    while tryAgain:
-        tryAgain = 0
+    failed_to_handle = False
+    failed_filename = None
+    if path in exclude:
+        return
+    while try_again:
+        try_again = False
         try:
-            shutil.rmtree(path, *args, **kargs)
+            names = os.listdir(path)
+            for name in names:
+                fullname = os.path.join(path, name)
+                if fullname not in exclude:
+                    try:
+                        mode = os.lstat(fullname).st_mode
+                    except OSError:
+                        mode = 0
+                    if stat.S_ISDIR(mode):
+                        try:
+                            rmtree(fullname, selinux=selinux, exclude=exclude)
+                        except OSError as e:
+                            if e.errno in (errno.EPERM, errno.EACCES, errno.EBUSY):
+                                # we alrady tried handling this on lower level and failed,
+                                # there's no point in trying again now
+                                failed_to_handle = True
+                            raise
+                    else:
+                        os.remove(fullname)
+            os.rmdir(path)
         except OSError as e:
+            if failed_to_handle:
+                raise
             if e.errno == errno.ENOENT: # no such file or directory
                 pass
-            elif do_selinux_ops and (e.errno==errno.EPERM or e.errno==errno.EACCES):
-                tryAgain = 1
-                if failedFilename == e.filename:
+            elif exclude and e.errno == errno.ENOTEMPTY: # there's something excluded left
+                pass
+            elif selinux and (e.errno == errno.EPERM or e.errno == errno.EACCES):
+                try_again = True
+                if failed_filename == e.filename:
                     raise
-                failedFilename = e.filename
+                failed_filename = e.filename
                 os.system("chattr -R -i %s" % path)
             elif e.errno == errno.EBUSY:
                 retries += 1
                 if retries > 1:
                     raise
-                tryAgain = 1
+                try_again = True
                 getLog().debug("retrying failed tree remove after sleeping a bit")
                 time.sleep(2)
             else:
@@ -164,7 +190,7 @@ def orphansKill(rootToKill, killsig=signal.SIGTERM):
                 pid = int(fn, 10)
                 os.kill(pid, killsig)
                 os.waitpid(pid, 0)
-        except OSError as e:
+        except OSError:
             pass
 
 @traceLog()
@@ -177,18 +203,18 @@ def yieldSrpmHeaders(srpms, plainRpmOk=0):
         try:
             fd = os.open(srpm, os.O_RDONLY)
         except OSError as e:
-            raise mockbuild.exception.Error("Cannot find/open srpm: %s. Error: %s"
+            raise exception.Error("Cannot find/open srpm: %s. Error: %s"
                                             % (srpm, e))
         try:
             hdr = ts.hdrFromFdno(fd)
         except rpm.error as e:
-            raise mockbuild.exception.Error(
+            raise exception.Error(
                     "Cannot find/open srpm: %s. Error: %s" % (srpm, ''.join(e)))
         finally:
             os.close(fd)
 
         if not plainRpmOk and hdr[rpm.RPMTAG_SOURCEPACKAGE] != 1:
-            raise mockbuild.exception.Error("File is not an srpm: %s." % srpm)
+            raise exception.Error("File is not an srpm: %s." % srpm)
 
         yield hdr
 
@@ -240,8 +266,8 @@ def unshare(flags):
     try:
         res = _libc.unshare(flags)
         if res:
-            raise mockbuild.exception.UnshareFailed(os.strerror(ctypes.get_errno()))
-    except AttributeError as e:
+            raise exception.UnshareFailed(os.strerror(ctypes.get_errno()))
+    except AttributeError:
         pass
 
 @traceLog()
@@ -250,7 +276,7 @@ def setns(fd, flags):
         getLog().debug("Setting namespace to fd %d. Flags: %s" % (fd, flags))
         res = _libc.setns(fd, flags)
         if res:
-            raise mockbuild.exception.SetnsFailed(os.strerror(ctypes.get_errno()))
+            raise exception.SetnsFailed(os.strerror(ctypes.get_errno()))
 
 # these are called in child process, so no logging
 def condChroot(chrootPath):
@@ -316,6 +342,7 @@ def logOutput(fds, logger, returnOutput=1, start=0, timeout=0, printOutput=False
         sys.stdout.flush()
     try:
         tail = ""
+        ansi_escape = re.compile(r'\x1b\[([0-9]{1,2}(;[0-9]{1,2})?)?[m|K]\x0f?')
         while not done:
             if (time.time() - start) > timeout and timeout != 0:
                 done = 1
@@ -344,8 +371,8 @@ def logOutput(fds, logger, returnOutput=1, start=0, timeout=0, printOutput=False
                         sys.stdout.buffer.write(raw)
                     else:
                         print(raw, end='')
-                input = raw.decode(encoding, 'replace')
-                lines = input.split("\n")
+                txt_input = raw.decode(encoding, 'replace')
+                lines = txt_input.split("\n")
                 if tail:
                     lines[0] = tail + lines[0]
                 # we may not have all of the last line
@@ -358,6 +385,7 @@ def logOutput(fds, logger, returnOutput=1, start=0, timeout=0, printOutput=False
                 if logger is not None:
                     for line in lines:
                         if line != '':
+                            line = ansi_escape.sub('', line)
                             logger.debug(line)
                     for h in logger.handlers:
                         h.flush()
@@ -380,7 +408,7 @@ def logOutput(fds, logger, returnOutput=1, start=0, timeout=0, printOutput=False
 def selinuxEnabled():
     """Check if SELinux is enabled (enforcing or permissive)."""
     for mount in open("/proc/mounts").readlines():
-        (fstype, mountpoint, garbage) = mount.split(None, 2)
+        (fstype, mountpoint, _) = mount.split(None, 2)
         if fstype == "selinuxfs":
             selinux_mountpoint = mountpoint
             break
@@ -417,9 +445,12 @@ def do(command, shell=False, chrootPath=None, cwd=None, timeout=0, raiseExc=True
         env = clean_env()
     try:
         child = None
-        logger.debug("Executing command: %s with env %s" % (command, env))
+        if shell and isinstance(command, list):
+            command = ['/bin/sh', '-c'] + command
+            shell = False
         if chrootPath and USE_NSPAWN:
             command = _prepare_nspawn_command(chrootPath, user, command)
+        logger.debug("Executing command: {0} with env {1} and shell {2}".format(command, env, shell))
         child = subprocess.Popen(
             command,
             shell=shell,
@@ -430,12 +461,10 @@ def do(command, shell=False, chrootPath=None, cwd=None, timeout=0, raiseExc=True
             stderr=subprocess.PIPE,
             preexec_fn=preexec,
             )
-
         # use select() to poll for output so we dont block
         output = logOutput([reader if pty else child.stdout, child.stderr],
                            logger, returnOutput, start, timeout, pty=pty,
                            printOutput=printOutput, child=child, chrootPath=chrootPath)
-
     except:
         # kill children if they arent done
         if child is not None and child.returncode is None:
@@ -463,7 +492,7 @@ def do(command, shell=False, chrootPath=None, cwd=None, timeout=0, raiseExc=True
 
     # only logging from this point, convert command to string
     if isinstance(command, list):
-           command = ' '.join(command)
+        command = ' '.join(command)
 
     if not niceExit:
         raise commandTimeoutExpired("Timeout(%s) expired for command:\n # %s\n%s" % (timeout, command, output))
@@ -471,9 +500,9 @@ def do(command, shell=False, chrootPath=None, cwd=None, timeout=0, raiseExc=True
     logger.debug("Child return code was: %s" % str(child.returncode))
     if raiseExc and child.returncode:
         if returnOutput:
-            raise mockbuild.exception.Error("Command failed: \n # %s\n%s" % (command, output), child.returncode)
+            raise exception.Error("Command failed: \n # %s\n%s" % (command, output), child.returncode)
         else:
-            raise mockbuild.exception.Error("Command failed. See logs for output.\n # %s" % (command,), child.returncode)
+            raise exception.Error("Command failed. See logs for output.\n # %s" % (command,), child.returncode)
 
     return output
 
@@ -525,7 +554,7 @@ def _prepare_nspawn_command(chrootPath, user, cmd):
             cmd = ['/bin/su', '-l', user, '-c', '"{0}"'.format(cmd)]
     elif not cmd_is_list:
         cmd = [ cmd, ]
-    cmd = ['/usr/bin/systemd-nspawn', '-D', chrootPath] + cmd
+    cmd = ['/usr/bin/systemd-nspawn', '-M' , uuid.uuid4().hex, '-D', chrootPath] + cmd
     if cmd_is_list:
         return cmd
     else:
@@ -539,21 +568,20 @@ def doshell(chrootPath=None, environ=None, uid=None, gid=None, user=None, cmd=No
     if not 'PROMPT_COMMAND' in environ:
         environ['PROMPT_COMMAND'] = 'printf "\033]0;<mock-chroot>\007<mock-chroot>"'
     if not 'SHELL' in environ:
-        environ['SHELL'] = '/bin/bash'
+        environ['SHELL'] = '/bin/sh'
     log.debug("doshell environment: %s", environ)
     if cmd:
-        if not USE_NSPAWN:
-            cmdstr = '/bin/bash -c "%s"' % cmd
-        else:
-            cmdstr = cmd
+        if not isinstance(cmd, list):
+            cmd = [cmd]
+        cmd = ['/bin/sh', '-c'] + cmd
     else:
-        cmdstr = "/bin/bash -i -l"
+        cmd = ["/bin/sh", "-i", "-l"]
     if USE_NSPAWN:
-        cmdstr = _prepare_nspawn_command(chrootPath, user, cmdstr)
+        cmd = _prepare_nspawn_command(chrootPath, user, cmd)
     preexec = ChildPreExec(personality=None, chrootPath=chrootPath, cwd=None,
                            uid=uid, gid=gid, env=environ, shell=True)
-    log.debug("doshell: command: %s" % cmdstr)
-    return subprocess.call(cmdstr, preexec_fn=preexec, env=environ, shell=True)
+    log.debug("doshell: command: %s" % cmd)
+    return subprocess.call(cmd, preexec_fn=preexec, env=environ, shell=False)
 
 
 
@@ -564,7 +592,7 @@ def run(cmd, isShell=True):
 
 def clean_env():
     env = {'TERM' : 'vt100',
-           'SHELL' : '/bin/bash',
+           'SHELL' : '/bin/sh',
            'HOME' : '/builddir',
            'HOSTNAME' : 'mock',
            'PATH' : '/usr/bin:/bin:/usr/sbin:/sbin',
@@ -580,11 +608,11 @@ def get_fs_type(path):
     return p.stdout.readline().strip()
 
 def find_non_nfs_dir():
-    dirs = ('/tmp', '/usr/tmp', '/')
+    dirs = ('/dev/shm', '/run', '/tmp', '/usr/tmp', '/')
     for d in dirs:
         if not get_fs_type(d).startswith('nfs'):
             return d
-    raise mockbuild.exception.Error('Cannot find non-NFS directory in: %s' % dirs)
+    raise exception.Error('Cannot find non-NFS directory in: %s' % dirs)
 
 
 @traceLog()
@@ -597,6 +625,7 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
     config_opts['cache_topdir'] = '/var/cache/mock'
     config_opts['clean'] = True
     config_opts['check'] = True
+    config_opts['post_install'] = False
     config_opts['chroothome'] = '/builddir'
     config_opts['log_config_file'] = 'logging.ini'
     config_opts['rpmbuild_timeout'] = 0
@@ -619,6 +648,9 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
     config_opts['cleanup_on_success'] = True
     config_opts['cleanup_on_failure'] = True
 
+    config_opts['exclude_from_homedir_cleanup'] = ['build/SOURCES', '.bash_history',
+                                                   '.bashrc']
+
     config_opts['createrepo_on_rpms'] = False
     config_opts['createrepo_command'] = '/usr/bin/createrepo_c -d -q -x *.src.rpm' # default command
 
@@ -637,7 +669,7 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
             'ccache_opts': {
                 'max_cache_size': "4G",
                 'compress': None,
-                'dir': "%(cache_topdir)s/%(root)s/ccache/"},
+                'dir': "%(cache_topdir)s/%(root)s/ccache/u%(chrootuid)s/"},
             'yum_cache_enable': True,
             'yum_cache_opts': {
                 'max_age_days': 30,
@@ -669,7 +701,8 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
             'tmpfs_opts': {
                 'required_ram_mb': 900,
                 'max_fs_size': None,
-                'mode': '0755'},
+                'mode': '0755',
+                'keep_mounted' : False},
             'selinux_enable': True,
             'selinux_opts': {},
             'package_state_enable' : False,
@@ -748,7 +781,7 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
     config_opts['yum_builddep_command'] = '/usr/bin/yum-builddep'
     config_opts['dnf_command'] = '/usr/bin/dnf'
     config_opts['rpm_command'] = '/bin/rpm'
-    config_opts['rpmbuild_command'] = '/bin/rpmbuild'
+    config_opts['rpmbuild_command'] = '/usr/bin/rpmbuild'
 
     return config_opts
 
@@ -756,6 +789,8 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
 def set_config_opts_per_cmdline(config_opts, options, args):
     "takes processed cmdline args and sets config options."
     config_opts['verbose'] = options.verbose
+    config_opts['print_main_output'] = config_opts['verbose'] > 0 and sys.stderr.isatty()
+
     # do some other options and stuff
     if options.arch:
         config_opts['target_arch'] = options.arch
@@ -770,6 +805,9 @@ def set_config_opts_per_cmdline(config_opts, options, args):
     if not options.check:
         config_opts['check'] = options.check
 
+    if options.post_install:
+        config_opts['post_install'] = options.post_install
+
     for option in options.rpmwith:
         options.rpmmacros.append("_with_%s --with-%s" %
                                  (option.replace("-", "_"), option))
@@ -780,14 +818,22 @@ def set_config_opts_per_cmdline(config_opts, options, args):
 
     for macro in options.rpmmacros:
         try:
+            macro = macro.strip()
             k, v = macro.split(" ", 1)
             if not k.startswith('%'):
                 k = '%%%s' % k
             config_opts['macros'].update({k: v})
         except:
-            raise mockbuild.exception.BadCmdline(
+            raise exception.BadCmdline(
                 "Bad option for '--define' (%s).  Use --define 'macro expr'"
                 % macro)
+
+    if options.macrofile:
+        config_opts['macrofile'] = os.path.expanduser(options.macrofile)
+        if not os.path.isfile(config_opts['macrofile']):
+            raise exception.BadCmdline(
+                "Input rpm macros file does not exist: %s"
+                % options.macrofile)
 
     if options.resultdir:
         config_opts['resultdir'] = os.path.expanduser(options.resultdir)
@@ -798,13 +844,13 @@ def set_config_opts_per_cmdline(config_opts, options, args):
 
     for i in options.disabled_plugins:
         if i not in config_opts['plugins']:
-            raise mockbuild.exception.BadCmdline(
+            raise exception.BadCmdline(
                 "Bad option for '--disable-plugin=%s'. Expecting one of: %s"
                 % (i, config_opts['plugins']))
         config_opts['plugin_conf']['%s_enable' % i] = False
     for i in options.enabled_plugins:
         if i not in config_opts['plugins']:
-            raise mockbuild.exception.BadCmdline(
+            raise exception.BadCmdline(
                 "Bad option for '--enable-plugin=%s'. Expecting one of: %s"
                 % (i, config_opts['plugins']))
         config_opts['plugin_conf']['%s_enable' % i] = True
@@ -813,22 +859,22 @@ def set_config_opts_per_cmdline(config_opts, options, args):
             p, kv = option.split(":", 1)
             k, v  = kv.split("=", 1)
         except:
-            raise mockbuild.exception.BadCmdline(
+            raise exception.BadCmdline(
                 "Bad option for '--plugin-option' (%s).  Use --plugin-option 'plugin:key=value'"
                 % option)
         if p not in config_opts['plugins']:
-            raise mockbuild.exception.BadCmdline(
+            raise exception.BadCmdline(
                 "Bad option for '--plugin-option' (%s).  No such plugin: %s"
                 % (option, p))
         try:
             v = literal_eval(v)
         except:
-          pass
+            pass
         config_opts['plugin_conf'][p + "_opts"].update({k: v})
 
 
     if options.mode in ("rebuild",) and len(args) > 1 and not options.resultdir:
-        raise mockbuild.exception.BadCmdline(
+        raise exception.BadCmdline(
             "Must specify --resultdir when building multiple RPMS.")
 
     if options.cleanup_after == False:
@@ -840,7 +886,7 @@ def set_config_opts_per_cmdline(config_opts, options, args):
         config_opts['cleanup_on_failure'] = True
     # can't cleanup unless resultdir is separate from the root dir
     rootdir = os.path.join(config_opts['basedir'], config_opts['root'])
-    if mockbuild.util.is_in_dir(config_opts['resultdir'] % config_opts, rootdir):
+    if is_in_dir(config_opts['resultdir'] % config_opts, rootdir):
         config_opts['cleanup_on_success'] = False
         config_opts['cleanup_on_failure'] = False
 
@@ -866,9 +912,9 @@ def set_config_opts_per_cmdline(config_opts, options, args):
 
     if options.scm:
         try:
-            from mockbuild import scm
-        except Exception as e:
-            raise mockbuild.exception.BadCmdline(
+            from . import scm
+        except ImportError as e:
+            raise exception.BadCmdline(
                 "Mock SCM module not installed: %s" % e)
 
         config_opts['scm'] = options.scm
@@ -877,7 +923,7 @@ def set_config_opts_per_cmdline(config_opts, options, args):
                 k, v = option.split("=", 1)
                 config_opts['scm_opts'].update({k: v})
             except:
-                raise mockbuild.exception.BadCmdline(
+                raise exception.BadCmdline(
                 "Bad option for '--scm-option' (%s).  Use --scm-option 'key=value'"
                 % option)
 
@@ -888,7 +934,7 @@ def update_config_from_file(config_opts, config_file, uid_manager):
     if os.fork() == 0:
         try:
             os.close(r_pipe)
-            if not all(uid.getresuid()):
+            if uid_manager and not all(uid.getresuid()):
                 uid_manager.dropPrivsForever()
             with open(config_file) as f:
                 code = compile(f.read(), config_file, 'exec')
@@ -918,8 +964,84 @@ def update_config_from_file(config_opts, config_file, uid_manager):
                         raise
             _, ret = os.wait()
             if ret != 0:
-                raise mockbuild.exception.ConfigError('Error in configuration')
+                raise exception.ConfigError('Error in configuration')
             if new_config:
                 config_opts.update(pickle.loads(new_config))
         finally:
             reader.close()
+
+@traceLog()
+def load_config(config_path, name, uidManager, version, PKGPYTHONDIR):
+    log = logging.getLogger()
+    if uidManager:
+        gid = uidManager.unprivUid
+    else:
+        gid = os.getuid()
+    config_opts = setup_default_config_opts(gid,
+            version, PKGPYTHONDIR)
+
+    # array to save config paths
+    config_opts['config_paths'] = []
+    config_opts['chroot_name'] = name
+
+    # Read in the config files: default, and then user specified
+    if name.endswith('.cfg'):
+        # If the .cfg is explicitly specified we take the root arg to
+        # specify a path, rather than looking it up in the configdir.
+        chroot_cfg_path = name
+        config_opts['chroot_name'] = os.path.splitext(os.path.basename(name))[0]
+    else:
+        chroot_cfg_path = '%s/%s.cfg' % (config_path, name)
+    config_opts['config_file'] = chroot_cfg_path
+    for cfg in (os.path.join(config_path, 'site-defaults.cfg'),
+                chroot_cfg_path):
+        if os.path.exists(cfg):
+            config_opts['config_paths'].append(cfg)
+            update_config_from_file(config_opts, cfg, uidManager)
+            check_macro_definition(config_opts)
+        else:
+            log.error("Could not find required config file: %s" % cfg)
+            if name == "default":
+                log.error("  Did you forget to specify the chroot to use with '-r'?")
+            if "/" in cfg:
+                log.error("  If you're trying to specify a path, include the .cfg extension, e.g. -r ./target.cfg")
+            sys.exit(1)
+    # Read user specific config file
+    cfg = os.path.join(os.path.expanduser('~' + pwd.getpwuid(os.getuid())[0]),
+            '.mock/user.cfg')
+    if os.path.exists(cfg):
+        config_opts['config_paths'].append(cfg)
+        update_config_from_file(config_opts, cfg, uidManager)
+
+    # default /etc/hosts contents
+    if (not config_opts['use_host_resolv']
+        and 'etc/hosts' not in config_opts['files']):
+        config_opts['files']['etc/hosts'] = dedent('''\
+            127.0.0.1 localhost localhost.localdomain
+            ::1       localhost localhost.localdomain localhost6 localhost6.localdomain6
+            ''')
+    return config_opts
+
+@traceLog()
+def check_macro_definition(config_opts):
+    for k, v in config_opts['macros'].items():
+        if not k or (not v and (v is not None)) or len(k.split()) != 1:
+            raise exception.BadCmdline(
+                "Bad macros 'config_opts['macros']['%s'] = ['%s']'" % (k,v) )
+        if not k.startswith('%'):
+            del config_opts['macros'][k]
+            k = '%{0}'.format(k)
+            config_opts['macros'].update({k: v})
+
+@traceLog()
+def pretty_getcwd():
+    try:
+        return os.getcwd()
+    except OSError:
+        if ORIGINAL_CWD is not None:
+            return ORIGINAL_CWD
+        else:
+            return find_non_nfs_dir()
+
+ORIGINAL_CWD = None
+ORIGINAL_CWD = pretty_getcwd()
