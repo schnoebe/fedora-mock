@@ -29,6 +29,7 @@ Name: mock
 Version: %{release_version}
 Release: 1%{?dist}
 License: GPLv2+
+Epoch:	1
 Source: https://git.fedorahosted.org/cgit/mock.git/snapshot/%{name}-%{version}.tar.xz
 URL: http://fedoraproject.org/wiki/Projects/Mock
 BuildArch: noarch
