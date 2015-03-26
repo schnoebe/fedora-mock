@@ -605,10 +605,6 @@ def main():
     # verify that we're not trying to build an arch that we can't
     check_arch_combination(config_opts['rpmbuild_arch'], config_opts)
 
-    # security cleanup (don't need/want this in the chroot)
-    if 'SSH_AUTH_SOCK' in os.environ:
-        del os.environ['SSH_AUTH_SOCK']
-
     # elevate privs
     uidManager._becomeUser(0, 0)
 
@@ -661,6 +657,10 @@ def run_command(options, args, config_opts, commands, buildroot, state):
         scmWorker.get_sources()
         buildroot.uid_manager.restorePrivs()
         (options.sources, options.spec) = scmWorker.prepare_sources()
+
+    # security cleanup (don't need/want this in the chroot)
+    if 'SSH_AUTH_SOCK' in os.environ:
+        del os.environ['SSH_AUTH_SOCK']
 
     if options.mode == 'init':
         if config_opts['clean']:
