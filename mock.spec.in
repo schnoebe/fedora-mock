@@ -24,6 +24,7 @@
 # mock group id allocate for Fedora
 %global mockgid  135
 
+Group: Development/Tools
 Summary: Builds packages inside chroots
 Name: mock
 Version: %{release_version}
@@ -45,7 +46,8 @@ Requires: systemd
 %endif
 Requires(pre): shadow-utils
 Requires(post): coreutils
-BuildRequires: autoconf, automake
+BuildRequires: autoconf
+BuildRequires: automake >= 1.11
 %if 0%{?fedora} || 0%{?rhel} > 6
 BuildRequires: bash-completion
 %endif
@@ -71,6 +73,7 @@ Recommends: dnf-plugins-core
 Mock takes an SRPM and builds it in a chroot.
 
 %package scm
+Group: Development/Tools
 Summary: Mock SCM integration module
 Requires: %{name} = %{epoch}:%{version}-%{release}
 Requires: cvs
@@ -85,6 +88,7 @@ Mock SCM integration module.
 # lvm plugin requires lvm2-python-libs, kernel >= 3.0 and glibc >= 2.14, which
 # are not available on el6
 %package lvm
+Group: Development/Tools
 Summary: LVM plugin for mock
 Requires: %{name} = %{epoch}:%{version}-%{release}
 Requires: lvm2
