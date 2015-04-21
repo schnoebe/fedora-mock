@@ -34,7 +34,11 @@ Epoch:	1
 Source: https://git.fedorahosted.org/cgit/mock.git/snapshot/%{name}-%{version}.tar.xz
 URL: http://fedoraproject.org/wiki/Projects/Mock
 BuildArch: noarch
+%if 0%{?fedora} > 21
+Requires: yum >= yum-3.4.3-505
+%else
 Requires: yum >= 2.4
+%endif
 Requires: tar
 Requires: pigz
 Requires: usermode
@@ -67,7 +71,17 @@ BuildRequires: python-devel
 %if 0%{?fedora} > 21
 Recommends: dnf
 Recommends: dnf-plugins-core
+Recommends: btrfs-progs
 %endif
+%if 0%{?fedora} == 21 || 0%{?fedora} == 20
+Requires: dnf
+Requires: dnf-plugins-core
+Requires: btrfs-progs
+%endif
+%if 0%{?rhel} >= 0
+Requires: btrfs-progs
+%endif
+
 
 %description
 Mock takes an SRPM and builds it in a chroot.
@@ -144,7 +158,9 @@ fi
     # can be removed when yum-utils >= 1.1.31 lands in el6
     echo "config_opts['plugin_conf']['package_state_enable'] = False" >> $RPM_BUILD_ROOT%{_sysconfdir}/mock/site-defaults.cfg
 %endif
-
+%if 0%{?fedora} > 21
+    echo "config_opts['yum_command'] = '/usr/bin/yum-deprecated'" >> $RPM_BUILD_ROOT%{_sysconfdir}/mock/site-defaults.cfg
+%endif
 %pre
 
 # check for existence of mock group, create it if not found

@@ -78,14 +78,7 @@ class scmWorker(object):
 
         self.log.debug("SCM checkout command: " + self.get)
         self.log.debug("SCM checkout post command: " + str(self.postget))
-        self.environ = os.environ.copy()
-        # Set HOME properly while checking out from SCM since tools like
-        # Subversion might have there settings needed to carry out checkout
-        # non-interactively
-        self.environ['HOME'] = pwd.getpwuid(os.getuid()).pw_dir
-        self.environ['CVS_RSH'] = "ssh"
-        if 'SSH_AUTH_SOCK' not in self.environ:
-            self.environ['SSH_AUTH_SOCK'] = pwd.getpwuid(os.getuid()).pw_dir + "/.ssh/auth_sock"
+        self.environ = dict(os.environ)
 
     @traceLog()
     def get_sources(self):
@@ -141,12 +134,15 @@ class scmWorker(object):
         rpm_spec = ts.parseSpec(self.spec)
         self.name = rpm.expandMacro("%{name}")
         self.version = rpm.expandMacro("%{version}")
+        tarball = None
         try:
             sources_list = rpm_spec.sources()
         except:
             sources_list = rpm_spec.sources
         for (filename, num, flags) in sources_list:
             self.sources.append(filename.split("/")[-1])
+            if num == 0 and flags == 1:
+                tarball = filename.split("/")[-1]
         self.log.debug("Sources: %s" % self.sources)
 
         # Adjust timestamps for Git checkouts
@@ -156,7 +152,8 @@ class scmWorker(object):
         # Generate a tarball from the checked out sources if needed
         if str(self.write_tar).lower() == "true":
             tardir = self.name + "-" + self.version
-            tarball = tardir + ".tar.gz"
+            if tarball == None:
+                tarball = tardir + ".tar.gz"
             taropts = ""
 
             # Always exclude vcs data from tarball unless told not to
@@ -169,7 +166,7 @@ class scmWorker(object):
             dir = os.getcwd()
             os.chdir(self.wrk_dir)
             os.rename(self.src_dir, tardir)
-            cmd = "tar czf " + tarball + " " + taropts + " " + tardir
+            cmd = "tar caf " + tarball + " " + taropts + " " + tardir
             util.do(shlex.split(cmd), shell=False, cwd=self.wrk_dir, env=self.environ)
             os.rename(tarball, tardir + "/" + tarball)
             os.rename(tardir, self.src_dir)

@@ -200,6 +200,8 @@ def do_build(opts, cfg, pkg):
         open(success_file, 'w').write('done\n')
         ret = 1
     else:
+        if (isinstance(err, bytes)):
+            err = err.decode("utf-8")
         sys.stderr.write(err)
         open(fail_file, 'w').write('undone\n')
         ret = 0
@@ -243,11 +245,11 @@ def main(args):
         local_tmp_dir = os.path.abspath(opts.localrepo)
         if not os.path.exists(local_tmp_dir):
             os.makedirs(local_tmp_dir)
+            os.chmod(local_tmp_dir, 0o755)
     else:
         pre = 'mock-chain-%s-' % opts.uniqueext
         local_tmp_dir = tempfile.mkdtemp(prefix=pre, dir='/var/tmp')
-
-    os.chmod(local_tmp_dir, 0o755)
+        os.chmod(local_tmp_dir, 0o755)
 
     if opts.logfile:
         opts.logfile = os.path.join(local_tmp_dir, opts.logfile)

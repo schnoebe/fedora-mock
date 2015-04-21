@@ -72,7 +72,7 @@ personality_defs = {
 
 PLUGIN_LIST = ['tmpfs', 'root_cache', 'yum_cache', 'bind_mount',
                'ccache', 'selinux', 'package_state', 'chroot_scan',
-               'lvm_root', 'compress_logs']
+               'lvm_root', 'compress_logs', 'sign']
 
 # This is set to False on EL6 in build time
 USE_NSPAWN = False
@@ -673,7 +673,8 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
             'yum_cache_opts': {
                 'max_age_days': 30,
                 'max_metadata_age_days': 30,
-                'dir': "%(cache_topdir)s/%(root)s/yum_cache/",
+                'dir': "%(cache_topdir)s/%(root)s/%(package_manager)s_cache/",
+                'target_dir': "/var/cache/%(package_manager)s/",
                 'online': True,},
             'root_cache_enable': True,
             'root_cache_opts': {
@@ -681,7 +682,7 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
                 'max_age_days': 15,
                 'dir': "%(cache_topdir)s/%(root)s/root_cache/",
                 'compress_program': 'pigz',
-                'exclude_dirs': ["./proc", "./sys", "./dev", "./tmp/ccache", "./var/cache/yum" ],
+                'exclude_dirs': ["./proc", "./sys", "./dev", "./tmp/ccache", "./var/cache/yum", "./var/cache/dnf"],
                 'extension': '.gz'},
             'bind_mount_enable': True,
             'bind_mount_opts': {
@@ -711,6 +712,11 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
                 "\\bcore(\\.\\d+)?$",
                 "\\.log$",
                 ]},
+            'sign_enable': False,
+            'sign_opts': {
+                'cmd' : 'rpmsign',
+                'opts' : '--addsign %(rpms)s',
+                },
             }
 
     config_opts['environment'] = {
@@ -774,6 +780,8 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
     # security config
     config_opts['no_root_shells'] = False
     config_opts['extra_chroot_dirs'] = []
+
+    config_opts['package_manager'] = 'yum'
 
     # configurable commands executables
     config_opts['yum_command'] = '/usr/bin/yum'
@@ -1055,3 +1063,33 @@ def pretty_getcwd():
 
 ORIGINAL_CWD = None
 ORIGINAL_CWD = pretty_getcwd()
+
+@traceLog()
+def find_btrfs_in_chroot(mockdir, chroot_path):
+    """
+    Find a btrfs subvolume inside the chroot.
+
+    Example btrfs output:
+    ID 258 gen 32689 top level 5 path root
+    ID 493 gen 32682 top level 258 path var/lib/mock/fedora-rawhide-x86_64/root/var/lib/machines
+
+    The subvolume's path will always be the 9th field of the output and
+    will not contain a leading '/'. The output will also contain additional
+    newline at the end, which should not be parsed.
+    """
+
+    try:
+       output = do(["btrfs", "subv", "list", mockdir], returnOutput=1)
+    except OSError as e:
+       # btrfs utility does not exist, nothing we can do about it
+       if e.errno == errno.ENOENT:
+           return None
+       raise e
+    except Exception as e:
+       # it is not btrfs volume
+       return None
+
+    for l in output[:-1].splitlines():
+       subv = l.split()[8]
+       if subv.startswith(chroot_path[1:]):
+           return subv
