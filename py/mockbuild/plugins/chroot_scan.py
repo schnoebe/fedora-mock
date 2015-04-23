@@ -31,14 +31,22 @@ class ChrootScan(object):
         self.config = buildroot.config
         self.state = buildroot.state
         self.scan_opts = conf
-        self.regexes = self.config['plugin_conf']['chroot_scan_opts']['regexes']
         self.resultdir = os.path.join(buildroot.resultdir, "chroot_scan")
         plugins.add_hook("postbuild", self._scanChroot)
         getLog().info("chroot_scan: initialized")
 
+    def _only_failed(self):
+        """ Returns boolean value if option 'only_failed' is set. """
+        return str(self.scan_opts['only_failed']) == 'True'
+
     @traceLog()
     def _scanChroot(self):
-        regexstr = "|".join(self.regexes)
+        is_failed = self.state.result != "success"
+        if (self._only_failed() and is_failed) or not self._only_failed():
+            self.__scanChroot()
+
+    def __scanChroot(self):
+        regexstr = "|".join(self.scan_opts['regexes'])
         regex = re.compile(regexstr)
         chroot = self.buildroot.make_chroot_path()
         mockbuild.util.mkdirIfAbsent(self.resultdir)

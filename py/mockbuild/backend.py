@@ -229,12 +229,15 @@ class Commands(object):
                 self.buildroot.root_log.info("Short circuit builds don't produce RPMs")
             else:
                 raise PkgError('No build results found')
+            self.state.result = 'success'
 
             self.state.finish(rpmbuildstate)
 
         finally:
             if not util.USE_NSPAWN:
                 self.uid_manager.restorePrivs()
+            if self.state.result != 'success':
+                self.state.result = 'fail'
             # tell caching we are done building
             self.plugins.call_hooks('postbuild')
         self.state.finish(buildstate)
@@ -406,7 +409,9 @@ class Commands(object):
         # created by rpm that created it (outside of chroot)
         check_opt = ''
         if not check:
-            check_opt = '--nocheck'
+            # this is because EL5/6 does not know --nocheck
+            # when EL5/6 targets are not supported, replace it with --nocheck
+            check_opt = "--define '__spec_check_template exit 0; '"
 
         mode = '-bb'
         sc = self.config.get('short_circuit')
