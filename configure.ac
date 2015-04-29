@@ -10,7 +10,7 @@ temp_RELEASE_NAME=mock
 temp_RELEASE_MAJOR=1
 temp_RELEASE_MINOR=2
 temp_RELEASE_SUBLEVEL=8
-temp_RELEASE_EXTRALEVEL=.mc2
+temp_RELEASE_EXTRALEVEL=.mc0
 ####################################
 
 #AC_PREREQ(2.61)
