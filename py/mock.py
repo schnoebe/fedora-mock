@@ -224,6 +224,8 @@ def command_parse():
                       help="disable configure option for build (may be used more than once)")
     parser.add_option("--resultdir", action="store", type="string",
                       default=None, help="path for resulting files to be put")
+    parser.add_option("--rootdir", action="store", type="string",
+                      default=None, help="Path for where the chroot should be built")
     parser.add_option("--uniqueext", action="store", type="string",
                       default=None,
                       help="Arbitrary, unique extension to append to buildroot"
@@ -729,7 +731,7 @@ def run_command(options, args, config_opts, commands, buildroot, state):
         do_buildsrpm(config_opts, commands, buildroot, options, args)
 
     elif options.mode == 'orphanskill':
-        pass
+        util.orphansKill(buildroot.make_chroot_path())
 
     elif options.mode == 'copyin':
         commands.init()
@@ -817,6 +819,7 @@ def run_command(options, args, config_opts, commands, buildroot, state):
     buildroot._nuke_rpm_db()
     state.finish("run")
     state.alldone()
+    buildroot.finalize()
 
 if __name__ == '__main__':
     # fix for python 2.4 logging module bug:
